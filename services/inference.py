@@ -1,4 +1,13 @@
-"""推理：关键词基线（风险）；回复优先级 — 远程 INFERENCE_URL > 本地 Ollama > 模板句。"""
+"""对话推理与 RAG 编排。
+
+数据流（终端用户只调 HTTP `/v1/chat`，不访问 Qdrant）：
+
+1. **风险**：仍用关键词启发式（与向量库无关）。
+2. **回复**：面向用户的自然语言一律来自 **大模型**（或远程 `INFERENCE_URL` / 回退模板）。
+3. **RAG**：若配置了 `QDRANT_RAG_COLLECTION`，由**本服务**用嵌入检索 Qdrant，把命中的**原文片段**写进
+   发给大模型的 **system 提示**，再调 `/api/chat`。大模型不直连向量库，也不向用户暴露原始检索 API——
+   这是常见的 RAG 形态（检索器 + 生成器）。
+"""
 
 from __future__ import annotations
 
