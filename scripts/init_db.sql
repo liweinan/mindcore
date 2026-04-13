@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS messages (
     has_video BOOLEAN DEFAULT FALSE,
     audio_url TEXT,
     video_url TEXT,
-    model_version VARCHAR(32),
+    model_version VARCHAR(128),
     inference_time_ms INTEGER,
     confidence DOUBLE PRECISION
 );
