@@ -1,0 +1,33 @@
+[project]
+name = "mindcore"
+version = "0.1.0"
+description = "Mental health AI API prototype (MindCore)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "asyncpg==0.30.0",
+    "pydantic==2.10.3",
+    "pydantic-settings==2.6.1",
+    "celery==5.4.0",
+    "redis==5.2.1",
+    "httpx==0.28.1",
+    "qdrant-client==1.12.1",
+    "numpy==2.1.3",
+    "prometheus-client==0.21.1",
+    "python-dotenv==1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["api", "services", "worker"]

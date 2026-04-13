@@ -16,14 +16,16 @@ if command -v lsof >/dev/null 2>&1 && lsof -ti:8000 >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d .venv ]; then
-  echo "未找到 .venv，请先: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+if command -v uv >/dev/null 2>&1; then
+  nohup uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 >>"$LOG_FILE" 2>&1 &
+elif [ -d .venv ]; then
+  # shellcheck source=/dev/null
+  source .venv/bin/activate
+  nohup uvicorn api.main:app --host 127.0.0.1 --port 8000 >>"$LOG_FILE" 2>&1 &
+else
+  echo "未找到 uv 或 .venv。请先安装 uv 并执行: uv sync"
   exit 1
 fi
-
-# shellcheck source=/dev/null
-source .venv/bin/activate
-nohup uvicorn api.main:app --host 127.0.0.1 --port 8000 >>"$LOG_FILE" 2>&1 &
 echo $! >"$PID_FILE"
 echo "MindCore API 已后台启动，PID $(cat "$PID_FILE")，日志 $LOG_FILE"
 echo "停止: ./scripts/dev_api_stop.sh"

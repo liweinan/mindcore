@@ -17,7 +17,8 @@
 ## 环境要求
 
 - Docker / Docker Compose
-- Python 3.11+（当前开发环境使用 3.13 亦可）
+- [uv](https://docs.astral.sh/uv/)（管理 Python 版本、虚拟环境与依赖锁）
+- Python 3.11+（由 `uv` 按 `requires-python` 自动选用，当前环境 3.13 亦可）
 - 项目根目录作为工作目录执行下文命令
 
 ## 快速开始
@@ -30,13 +31,21 @@ docker compose up -d
 
 首次启动 Postgres 时会自动执行 `scripts/init_db.sql` 建表与种子数据。
 
-### 2. Python 虚拟环境与依赖
+### 2. 安装 uv 与项目依赖
+
+[安装 uv](https://docs.astral.sh/uv/getting-started/installation/) 后，在项目根目录执行：
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+# 同步运行时依赖（生成/更新 .venv，并以 uv.lock 为准）
+uv sync
+
+# 若需要跑 pytest，一并安装可选开发依赖
+uv sync --extra dev
 ```
+
+依赖声明在 `pyproject.toml`，锁定版本在 `uv.lock`。日常命令优先用 **`uv run …`**，无需手动 `source` 虚拟环境（fish / zsh / bash 行为一致）。
+
+若未安装 uv、仍想用传统 venv，可自行 `python -m venv .venv` 后 `pip install -e ".[dev]"`（不推荐与本仓库文档混用）。
 
 ### 3. 环境变量
 
@@ -49,7 +58,7 @@ cp .env.example .env
 ### 4. 启动 API
 
 ```bash
-uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 浏览器打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 查看 OpenAPI。
@@ -67,7 +76,7 @@ uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ### 5.（可选）启动 Celery Worker
 
 ```bash
-celery -A worker.celery_app worker --loglevel=info
+uv run celery -A worker.celery_app worker --loglevel=info
 ```
 
 同样需要**单独终端**或自行 `nohup ... &` 放到后台，否则会一直阻塞在该命令。
@@ -77,7 +86,7 @@ celery -A worker.celery_app worker --loglevel=info
 需容器 `qdrant` 已运行：
 
 ```bash
-python scripts/build_rag_knowledge.py
+uv run python scripts/build_rag_knowledge.py
 ```
 
 ### 7.（可选）主动学习脚本
@@ -85,7 +94,7 @@ python scripts/build_rag_knowledge.py
 根据消息置信度与风险筛选样本并写入 `annotation_tasks`：
 
 ```bash
-python scripts/active_learning.py
+uv run python scripts/active_learning.py
 ```
 
 ## HTTP 接口摘要
@@ -121,17 +130,17 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 ## 测试
 
 ```bash
-# 单元测试（不依赖容器）
-pytest tests/test_inference.py -q
+# 单元测试（不依赖容器；需已 uv sync --extra dev）
+uv run pytest tests/test_inference.py -q
 
-# HTTP E2E：需先 docker compose up -d，且 API 已在运行（另一终端 uvicorn，或 ./scripts/dev_api_background.sh）
-pytest tests/test_e2e_api.py -v
+# HTTP E2E：需先 docker compose up -d，且 API 已在运行（另一终端 uv run uvicorn，或 ./scripts/dev_api_background.sh）
+uv run pytest tests/test_e2e_api.py -v
 ```
 
 自定义 API 地址：
 
 ```bash
-MINDCORE_E2E_BASE_URL=http://127.0.0.1:8080 pytest tests/test_e2e_api.py -v
+MINDCORE_E2E_BASE_URL=http://127.0.0.1:8080 uv run pytest tests/test_e2e_api.py -v
 ```
 
 ## 仓库结构（节选）
@@ -142,8 +151,9 @@ services/            # 推理与领域逻辑（默认可切换远程生成服务
 worker/              # Celery 应用与任务
 scripts/             # 初始化 SQL、RAG 构建、主动学习
 tests/               # 单元测试与 E2E
+pyproject.toml       # 项目与依赖声明（uv）
+uv.lock              # 依赖锁定（提交到仓库）
 docker-compose.yml
-requirements.txt
 ```
 
 ## 与需求文档的关系
