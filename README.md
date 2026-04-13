@@ -29,7 +29,7 @@
 docker compose up -d
 ```
 
-首次启动 Postgres 时会自动执行 `scripts/init_db.sql` 建表与种子数据。
+Compose 会一并启动 **Ollama**（本机 `11434`）。首次需拉模型可执行 `./scripts/ensure_ollama_models.sh`。首次启动 Postgres 时会自动执行 `scripts/init_db.sql` 建表与种子数据。
 
 ### 2. 安装 uv 与项目依赖
 
@@ -120,15 +120,26 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 
 - **是否还要关键字**：**风险等级**仍用关键词启发式（轻量、可解释）。**自然语言回复默认始终经 Ollama**（`OLLAMA_BASE_URL` 默认为 `http://127.0.0.1:11434`），不再提供「不配 Ollama 就直接关键词模板」的路径；仅当 `USE_TEMPLATE_FALLBACK=true` 且 Ollama 失败时，才回退模板。Ollama 不可用且未开回退时，`POST /v1/chat` 返回 **503**。
 - **Ollama 和 LangChain 选哪个**：不是二选一。**Ollama** 负责在本机拉模型、推理（Apple Silicon / Metal 上体验好）。**LangChain**（或 LangGraph）是编排框架，适合做复杂链路与 Agent；本仓库先用 **`httpx` 调 Ollama HTTP API**，避免默认再绑一层框架；需要时你可在独立模块引入 LangChain 拼管道。
-- **模型放容器里还是宿主机**：在 Mac Studio 上更推荐 **宿主机安装 Ollama**（`https://ollama.com`），利用 Metal。Compose 里的 Linux 容器一般**用不上 Metal**，大模型镜像也重。可选：`docker compose --profile ollama up -d` 启动容器版 Ollama（适合无 GUI 服务器，Mac 上非首选）。
-- **小模型**：默认对话模型为 **`llama3.2:1b`**（`ollama pull llama3.2:1b`）；亦可改用 `qwen2.5:3b` 等并在 `.env` 设 `OLLAMA_CHAT_MODEL`。RAG 嵌入常用 `ollama pull nomic-embed-text`（768 维）。
-- **和 Qdrant 怎么对齐**：写入与查询必须用**同一嵌入模型**。推荐流程：1）`docker compose up -d` 启动 Qdrant；2）宿主机 Ollama 已拉好模型后，设置 `OLLAMA_BASE_URL=http://127.0.0.1:11434`，执行 `uv run python scripts/build_rag_knowledge.py`（脚本会检测该变量，**用 Ollama 嵌入建库**，与线上一致）；3）在 `.env` 中设置 `OLLAMA_BASE_URL`、`OLLAMA_CHAT_MODEL`、`OLLAMA_EMBED_MODEL`、`QDRANT_RAG_COLLECTION=mental_health_knowledge`；4）启动 API。
+- **模型放容器里还是宿主机**：默认 **`docker compose up -d` 会起 Compose 内 Ollama**（`11434` 映射到本机）。在 Mac Studio 上若要用 **宿主机 Ollama（Metal）**，请先停掉 Compose 里的 `ollama` 服务或改端口，避免与本机 `11434` 冲突；Metal 路径下仍设 `OLLAMA_BASE_URL=http://127.0.0.1:11434` 即可。
+- **小模型**：默认对话模型为 **`llama3.2:1b`**（`ollama pull llama3.2:1b` 或 `./scripts/ensure_ollama_models.sh`）；亦可改用 `qwen2.5:3b` 等并在 `.env` 设 `OLLAMA_CHAT_MODEL`。RAG 嵌入常用 `nomic-embed-text`（768 维）。
+- **和 Qdrant 怎么对齐**：写入与查询必须用**同一嵌入模型**。推荐流程：1）`docker compose up -d` 启动 Qdrant 与 Ollama，并拉好嵌入/对话模型；2）设置 `OLLAMA_BASE_URL=http://127.0.0.1:11434`，执行 `uv run python scripts/build_rag_knowledge.py`（脚本会检测该变量，**用 Ollama 嵌入建库**，与线上一致）；3）在 `.env` 中设置 `OLLAMA_BASE_URL`、`OLLAMA_CHAT_MODEL`、`OLLAMA_EMBED_MODEL`、`QDRANT_RAG_COLLECTION=mental_health_knowledge`；4）启动 API。
 
 ### RAG 与本项目行为说明（概念）
 
 - **「让大模型读向量库」**：实际上大模型**不会**去连 Qdrant。做法是**应用层**用向量库做检索，把命中的**文本片段**写进给模型的**提示词**（这里是 `system`），模型再基于「用户原话 + 这些片段」生成回答。这就是常见 **RAG**：检索和生成分开，模型读的是**文字上下文**，不是向量 API。
 - **「回复走大模型」**：默认即走 Ollama `/api/chat`（除非走 `INFERENCE_URL` 远程分支）；返回给用户的 `reply` 来自模型生成；Qdrant 只参与拼 `system`。当前 `INFERENCE_URL` 远程分支尚未接 Qdrant，仅 **Ollama** 路径带检索。
 - **「用户直接用向量库」**：当前对外只有 `POST /v1/chat`，没有把 Qdrant 暴露给终端用户，用户也不能直接查向量库。
+
+### 风险等级、置信度与 `model_version`（实现与设计说明）
+
+`/v1/chat` 返回并在 PostgreSQL `messages` 中落库的 **`risk_level`、`confidence`** 来自 `services/inference.py` 中的 **`_baseline_risk_and_confidence`**：在调用远程推理或 Ollama **之前**即确定——统计用户 `message` 命中预置关键词列表的个数（每个词至多计一次），再限制在 1～5；若 `risk_level` 为 1 或 5 则 `confidence` 为 `0.9`，否则为 `0.6`。二者均为**与模型输出无关的规则值**，不是分类器或 LLM 的概率。
+
+- **`model_version`**：按代码路径写入字符串标签（例如 Ollama 成功时为 `ollama:<聊天模型名>`，远程 `INFERENCE_URL` 分支为 `remote-mlx`，模板回退时为 `v1.0-fallback` 等），并非从权重文件读取的语义化版本。
+- **`inference_time_ms`**：Ollama 路径一般为整次 `infer` 的墙钟耗时（含可选 RAG 检索与 HTTP）；远程分支优先使用响应 JSON 中的 `inference_time_ms`，缺失或非正时回退为本地计时。
+
+**为何不用向量数据库做风险**：Qdrant 在本项目中的职责是 **RAG 检索**（把语义相近的知识片段拼进提示词），与风险打分是**两条链路**。用向量库做风险需要另行设计（例如与参考语料相似度或专用向量分类），当前仓库未实现；关键词基线是**低成本、行为可预期的占位实现**，便于原型联调与落库、`annotation_tasks` 等下游逻辑。
+
+**是否应改为模型推理**：若 `risk_level` / `confidence` 用于真实分流、告警或人工介入，更合理的方向是 **专用风险/危机意念分类模型**、经评估的 **结构化 LLM 输出**（配合校验与人工复核），而非当前启发式。关键词易漏检、误报，且与「置信度」的常规定义不一致；扩展前请明确合规与产品流程。
 
 ## 环境变量
 
@@ -149,7 +160,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 
 ## 测试
 
-一键验证 **Ollama 真回复**（需 `docker compose up -d` 起库，且本机 `ollama serve` 已拉好默认模型 `llama3.2:1b`）：
+一键验证 **Ollama 真回复**（需 `docker compose up -d` 起库与 Ollama，且已拉好默认模型 `llama3.2:1b`，例如 `./scripts/ensure_ollama_models.sh`）：
 
 ```bash
 ./scripts/smoke_chat.sh

@@ -7,6 +7,8 @@ from typing import Any
 import httpx
 from qdrant_client import QdrantClient
 
+OLLAMA_EMBED_CLIENT_TIMEOUT_SEC = 120.0
+
 
 async def ollama_embed(client: httpx.AsyncClient, base_url: str, model: str, text: str) -> list[float]:
     url = f"{base_url.rstrip('/')}/api/embeddings"
@@ -31,7 +33,7 @@ async def retrieve_rag_context(
 ) -> str:
     if not collection.strip():
         return ""
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
+    async with httpx.AsyncClient(timeout=OLLAMA_EMBED_CLIENT_TIMEOUT_SEC) as http_client:
         vector = await ollama_embed(http_client, ollama_base_url, embed_model, query)
 
     client = QdrantClient(host=qdrant_host, port=qdrant_port)

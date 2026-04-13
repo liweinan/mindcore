@@ -34,10 +34,8 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  # ARM Mac 上更推荐宿主机 Ollama（Metal）；需要 Linux 服务器或无本地 Ollama 时再启用：
-  # docker compose --profile ollama up -d
+  # 默认随 stack 启动，API 依赖 127.0.0.1:11434。若本机已跑宿主机 Ollama（Metal），需停其一以免端口冲突。
   ollama:
-    profiles: ["ollama"]
     image: ollama/ollama:latest
     ports:
       - "11434:11434"

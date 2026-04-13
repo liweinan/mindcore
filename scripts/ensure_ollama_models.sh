@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 自动拉取对话与嵌入小模型（Ollama）。优先本机 ollama 命令；否则 docker compose --profile ollama。
+# 自动拉取对话与嵌入小模型（Ollama）。优先本机 ollama 命令；否则 docker compose 起 ollama 服务。
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -22,8 +22,8 @@ wait_ollama_http() {
 }
 
 pull_in_compose() {
-  echo ">>> 启动 Compose 中的 ollama（profile ollama）"
-  docker compose --profile ollama up -d ollama
+  echo ">>> 启动 Compose 中的 ollama"
+  docker compose up -d ollama
   wait_ollama_http
   echo ">>> 容器内拉取 ${CHAT_MODEL}（体积较大，首次需数分钟）"
   docker compose exec -T ollama ollama pull "${CHAT_MODEL}"

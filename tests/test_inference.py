@@ -22,8 +22,11 @@ async def test_infer_ollama_fails_without_fallback_raises(monkeypatch: pytest.Mo
     monkeypatch.setenv("USE_TEMPLATE_FALLBACK", "false")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:59998")
     monkeypatch.setenv("QDRANT_RAG_COLLECTION", "")
-    with pytest.raises(InferenceUnavailableError):
+    with pytest.raises(InferenceUnavailableError) as raised:
         await infer("你好", "sess-2")
+    detail = raised.value.message
+    assert detail.startswith("Ollama 不可用:")
+    assert len(detail) > len("Ollama 不可用: ")
 
 
 def test_risk_keywords_cover_expected_phrases() -> None:

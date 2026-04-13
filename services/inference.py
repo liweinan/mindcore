@@ -19,6 +19,31 @@ from services.rag import retrieve_rag_context
 
 logger = logging.getLogger(__name__)
 
+# 本机 Ollama 冷启动或生成长回复时易触达默认读超时，适当放宽。
+REMOTE_GENERATE_TIMEOUT_SEC = 120.0
+OLLAMA_CHAT_TIMEOUT_SEC = 240.0
+
+
+def _format_ollama_exception(exc: BaseException) -> str:
+    """拼接可读的失败原因；部分网络/包装异常的 str() 为空。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        url = str(exc.request.url)
+        snippet = (exc.response.text or "")[:300].replace("\n", " ").strip()
+        base = f"HTTP {exc.response.status_code} @ {url}"
+        if snippet:
+            return f"{base} — {snippet}"
+        return base
+    text = str(exc).strip()
+    if text:
+        return text
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        c = str(cause).strip()
+        if c:
+            return f"{type(exc).__name__}（底层: {c}）"
+    return type(exc).__name__
+
+
 RISK_KEYWORDS = ("睡不着", "没意思", "不想见人", "难过", "想死", "绝望", "不想活了")
 MOCK_REPLIES: dict[int, str] = {
     1: "听起来状态还不错，保持好的生活习惯很重要哦。",
@@ -59,7 +84,7 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
             f"会话 {session_id}。\n用户说：{message}\n"
             "你是持证心理咨询师风格的助手，回复简短、共情、安全，不要诊断。"
         )
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=REMOTE_GENERATE_TIMEOUT_SEC) as client:
             response = await client.post(
                 f"{inference_url.rstrip('/')}/generate",
                 json={"prompt": prompt, "max_tokens": 256, "temperature": 0.7},
@@ -110,7 +135,7 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
             system_parts.append(rag_block)
         system_prompt = "\n".join(system_parts)
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=OLLAMA_CHAT_TIMEOUT_SEC) as client:
             response = await client.post(
                 f"{ollama_base}/api/chat",
                 json={
@@ -146,7 +171,9 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
             model_version = "v1.0-fallback"
             inference_time_ms = int((time.perf_counter() - start_time) * 1000)
         else:
-            raise InferenceUnavailableError(f"Ollama 不可用: {exc}") from exc
+            raise InferenceUnavailableError(
+                f"Ollama 不可用: {_format_ollama_exception(exc)}"
+            ) from exc
 
     return {
         "reply": reply,
