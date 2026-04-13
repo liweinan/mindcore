@@ -145,7 +145,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 
 @app.get("/health")
 async def health():
-    return {"status": "started", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 
 @app.get("/metrics")
