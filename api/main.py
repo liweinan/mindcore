@@ -18,6 +18,24 @@ from services.inference_errors import InferenceUnavailableError
 
 logger = logging.getLogger(__name__)
 
+_services_logging_configured = False
+
+
+def _configure_services_logging() -> None:
+    """Uvicorn 只把 uvicorn.* 设为 INFO，root 仍为 WARNING，services.* 的 logger.info 无法输出；挂到 stderr 且不向 root 传播。"""
+    global _services_logging_configured
+    if _services_logging_configured:
+        return
+    _services_logging_configured = True
+    svc = logging.getLogger("services")
+    svc.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    svc.addHandler(handler)
+    svc.propagate = False
+
+
 REQUEST_LATENCY = Histogram(
     "mindcore_chat_latency_seconds",
     "Latency of /v1/chat handler",
@@ -47,6 +65,7 @@ db_pool: asyncpg.Pool | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db_pool
+    _configure_services_logging()
     db_pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=10)
     yield
     if db_pool is not None:

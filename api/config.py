@@ -11,13 +11,15 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/0"
 
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_chat_model: str = "llama3.2:1b"
+    ollama_chat_model: str = "qwen2.5:0.5b-instruct-q2_K"
     ollama_embed_model: str = "nomic-embed-text"
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_rag_collection: str = ""
     qdrant_rag_top_k: int = 3
     use_template_fallback: bool = False
+    # 为 true 时打印嵌入向量、Qdrant 命中与 Ollama chat 请求体（含用户消息，仅用于排障）
+    inference_debug_log: bool = True
 
     @field_validator("ollama_base_url", mode="before")
     @classmethod

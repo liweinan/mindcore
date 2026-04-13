@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -135,18 +136,28 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
             system_parts.append(rag_block)
         system_prompt = "\n".join(system_parts)
 
-        async with httpx.AsyncClient(timeout=OLLAMA_CHAT_TIMEOUT_SEC) as client:
+        chat_body: dict[str, Any] = {
+            "model": chat_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.6},
+        }
+        if cfg.inference_debug_log:
+            logger.info(
+                "Ollama chat 请求 JSON=%s",
+                json.dumps(chat_body, ensure_ascii=False),
+            )
+
+        async with httpx.AsyncClient(
+            timeout=OLLAMA_CHAT_TIMEOUT_SEC,
+            trust_env=False,
+        ) as client:
             response = await client.post(
                 f"{ollama_base}/api/chat",
-                json={
-                    "model": chat_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": message},
-                    ],
-                    "stream": False,
-                    "options": {"temperature": 0.6},
-                },
+                json=chat_body,
             )
             response.raise_for_status()
             payload = response.json()

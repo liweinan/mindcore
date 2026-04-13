@@ -34,7 +34,42 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
-  # 默认随 stack 启动，API 依赖 127.0.0.1:11434。若本机已跑宿主机 Ollama（Metal），需停其一以免端口冲突。
+  # FastAPI：日志（含 INFERENCE_DEBUG_LOG 的 RAG / chat JSON）会出现在 docker compose up 的合并输出里。
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # 避免继承宿主机/IDE 注入的代理；否则 httpx 可能把 ollama、qdrant 走代理导致 502
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
+      DATABASE_URL: postgresql://admin:secret@postgres:5432/mental_health
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      QDRANT_RAG_COLLECTION: mental_health_knowledge
+      QDRANT_RAG_TOP_K: "3"
+      OLLAMA_BASE_URL: http://ollama:11434
+      INFERENCE_DEBUG_LOG: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_started
+
+  # 若本机已跑宿主机 Ollama（Metal），需与容器 11434 二选一以免端口冲突。
   ollama:
     image: ollama/ollama:latest
     ports:

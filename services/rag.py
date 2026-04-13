@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 import httpx
 from qdrant_client import QdrantClient
+
+from api.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_EMBED_CLIENT_TIMEOUT_SEC = 120.0
 
@@ -33,8 +39,20 @@ async def retrieve_rag_context(
 ) -> str:
     if not collection.strip():
         return ""
-    async with httpx.AsyncClient(timeout=OLLAMA_EMBED_CLIENT_TIMEOUT_SEC) as http_client:
+    async with httpx.AsyncClient(
+        timeout=OLLAMA_EMBED_CLIENT_TIMEOUT_SEC,
+        trust_env=False,
+    ) as http_client:
         vector = await ollama_embed(http_client, ollama_base_url, embed_model, query)
+
+    debug_log = get_settings().inference_debug_log
+    if debug_log:
+        logger.info(
+            "RAG 嵌入模型=%s 向量维度=%s 向量(JSON)=%s",
+            embed_model,
+            len(vector),
+            json.dumps(vector, ensure_ascii=False),
+        )
 
     client = QdrantClient(host=qdrant_host, port=qdrant_port)
     hits = client.search(
@@ -43,6 +61,22 @@ async def retrieve_rag_context(
         limit=top_k,
         with_payload=True,
     )
+    if debug_log:
+        rows: list[dict[str, Any]] = []
+        for hit in hits:
+            rows.append(
+                {
+                    "id": hit.id,
+                    "score": hit.score,
+                    "payload": hit.payload,
+                }
+            )
+        logger.info(
+            "RAG Qdrant collection=%s top_k=%s 命中=%s",
+            collection,
+            top_k,
+            json.dumps(rows, ensure_ascii=False, default=str),
+        )
     chunks: list[str] = []
     for hit in hits:
         payload = hit.payload or {}

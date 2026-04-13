@@ -121,7 +121,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 - **是否还要关键字**：**风险等级**仍用关键词启发式（轻量、可解释）。**自然语言回复默认始终经 Ollama**（`OLLAMA_BASE_URL` 默认为 `http://127.0.0.1:11434`），不再提供「不配 Ollama 就直接关键词模板」的路径；仅当 `USE_TEMPLATE_FALLBACK=true` 且 Ollama 失败时，才回退模板。Ollama 不可用且未开回退时，`POST /v1/chat` 返回 **503**。
 - **Ollama 和 LangChain 选哪个**：不是二选一。**Ollama** 负责在本机拉模型、推理（Apple Silicon / Metal 上体验好）。**LangChain**（或 LangGraph）是编排框架，适合做复杂链路与 Agent；本仓库先用 **`httpx` 调 Ollama HTTP API**，避免默认再绑一层框架；需要时你可在独立模块引入 LangChain 拼管道。
 - **模型放容器里还是宿主机**：默认 **`docker compose up -d` 会起 Compose 内 Ollama**（`11434` 映射到本机）。在 Mac Studio 上若要用 **宿主机 Ollama（Metal）**，请先停掉 Compose 里的 `ollama` 服务或改端口，避免与本机 `11434` 冲突；Metal 路径下仍设 `OLLAMA_BASE_URL=http://127.0.0.1:11434` 即可。
-- **小模型**：默认对话模型为 **`llama3.2:1b`**（`ollama pull llama3.2:1b` 或 `./scripts/ensure_ollama_models.sh`）；亦可改用 `qwen2.5:3b` 等并在 `.env` 设 `OLLAMA_CHAT_MODEL`。RAG 嵌入常用 `nomic-embed-text`（768 维）。
+- **小模型 / 弱机器**：对话模型由 **`OLLAMA_CHAT_MODEL`** 决定（`services/inference.py` 调 Ollama `/api/chat`）。仓库默认 **`qwen2.5:0.5b-instruct-q2_K`**（约 0.5B + q2_K 量化，`ollama pull qwen2.5:0.5b-instruct-q2_K` 或 `./scripts/ensure_ollama_models.sh`）。可改回 **`llama3.2:1b`**、`qwen2.5:0.5b-instruct` 等（与 `ollama list` 名称一致即可）。这与论文里的 **1-bit 权重架构**（如 BitNet 路线）不是同一概念——后者在 Ollama 常用库里尚不普及。RAG 嵌入仍用 **`nomic-embed-text`**（768 维），与对话模型无关。
 - **和 Qdrant 怎么对齐**：写入与查询必须用**同一嵌入模型**。推荐流程：1）`docker compose up -d` 启动 Qdrant 与 Ollama，并拉好嵌入/对话模型；2）设置 `OLLAMA_BASE_URL=http://127.0.0.1:11434`，执行 `uv run python scripts/build_rag_knowledge.py`（脚本会检测该变量，**用 Ollama 嵌入建库**，与线上一致）；3）在 `.env` 中设置 `OLLAMA_BASE_URL`、`OLLAMA_CHAT_MODEL`、`OLLAMA_EMBED_MODEL`、`QDRANT_RAG_COLLECTION=mental_health_knowledge`；4）启动 API。
 
 ### RAG 与本项目行为说明（概念）
@@ -152,7 +152,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 | `USE_MOCK_INFERENCE` | `true`（默认）时使用内置规则基线；`false` 且配置 `INFERENCE_URL` 时请求外部 `/generate` |
 | `INFERENCE_URL` | 外部推理服务根 URL（例如自建 MLX/llama 网关），勿带末尾路径 |
 | `OLLAMA_BASE_URL` | 未走 `INFERENCE_URL` 远程分支时，**默认** `http://127.0.0.1:11434`，用 Ollama `/api/chat` 生成回复 |
-| `OLLAMA_CHAT_MODEL` | 对话模型名，默认 `llama3.2:1b`（须与 `ollama list` 中已有模型一致，否则会 404） |
+| `OLLAMA_CHAT_MODEL` | 对话模型名，默认 `qwen2.5:0.5b-instruct-q2_K`（须与 `ollama list` 一致） |
 | `OLLAMA_EMBED_MODEL` | 嵌入模型，默认 `nomic-embed-text`（与 RAG 检索、`build_rag_knowledge` 的 Ollama 路径一致） |
 | `QDRANT_RAG_COLLECTION` | 非空则启用 RAG：用上述嵌入查 Qdrant，再把命中片段写入 system 提示 |
 | `QDRANT_RAG_TOP_K` | 检索条数，默认 `3` |
@@ -160,7 +160,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 
 ## 测试
 
-一键验证 **Ollama 真回复**（需 `docker compose up -d` 起库与 Ollama，且已拉好默认模型 `llama3.2:1b`，例如 `./scripts/ensure_ollama_models.sh`）：
+一键验证 **Ollama 真回复**（需 `docker compose up -d` 起库与 Ollama，且已拉好默认模型 `qwen2.5:0.5b-instruct-q2_K`，例如 `./scripts/ensure_ollama_models.sh`）：
 
 ```bash
 ./scripts/smoke_chat.sh
