@@ -20,7 +20,7 @@ def test_health(client: httpx.Client) -> None:
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body.get("status") == "ok"
+    assert body.get("status") == "started"
     assert "timestamp" in body
 
 

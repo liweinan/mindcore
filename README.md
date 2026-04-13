@@ -101,7 +101,7 @@ uv run python scripts/active_learning.py
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/health` | 进程存活 |
+| GET | `/health` | 进程存活；JSON 中 `status` 为 `started` |
 | GET | `/ready` | 数据库连通性 |
 | GET | `/metrics` | Prometheus 指标 |
 | POST | `/v1/chat` | 创建或延续会话，返回回复与风险等级等 |
