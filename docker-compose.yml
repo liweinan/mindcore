@@ -34,6 +34,17 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # ARM Mac 上更推荐宿主机 Ollama（Metal）；需要 Linux 服务器或无本地 Ollama 时再启用：
+  # docker compose --profile ollama up -d
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
 volumes:
   postgres_data:
   qdrant_data:
+  ollama_data:

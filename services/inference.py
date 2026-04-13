@@ -1,12 +1,17 @@
-"""推理：默认规则/关键词基线；可选通过 INFERENCE_URL 调用外部生成服务。"""
+"""推理：关键词基线（风险）；回复优先级 — 远程 INFERENCE_URL > 本地 Ollama > 模板句。"""
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any
 
 import httpx
+
+from services.rag import retrieve_rag_context
+
+logger = logging.getLogger(__name__)
 
 RISK_KEYWORDS = ("睡不着", "没意思", "不想见人", "难过", "想死", "绝望", "不想活了")
 MOCK_REPLIES: dict[int, str] = {
@@ -32,6 +37,7 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
     start_time = time.perf_counter()
     inference_url = (os.getenv("INFERENCE_URL") or "").strip()
     use_mock = os.getenv("USE_MOCK_INFERENCE", "true").lower() in ("1", "true", "yes")
+    ollama_base = (os.getenv("OLLAMA_BASE_URL") or "").strip()
 
     risk_level, confidence = _baseline_risk_and_confidence(message)
     reply: str
@@ -57,6 +63,63 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
         inference_time_ms = int(payload.get("inference_time_ms") or 0)
         if inference_time_ms <= 0:
             inference_time_ms = int((time.perf_counter() - start_time) * 1000)
+    elif ollama_base:
+        try:
+            chat_model = (os.getenv("OLLAMA_CHAT_MODEL") or "qwen2.5:3b").strip()
+            embed_model = (os.getenv("OLLAMA_EMBED_MODEL") or "nomic-embed-text").strip()
+            collection = (os.getenv("QDRANT_RAG_COLLECTION") or "").strip()
+            qdrant_host = (os.getenv("QDRANT_HOST") or "localhost").strip()
+            qdrant_port = int(os.getenv("QDRANT_PORT") or "6333")
+            top_k = int(os.getenv("QDRANT_RAG_TOP_K") or "3")
+
+            rag_block = ""
+            if collection:
+                try:
+                    rag_block = await retrieve_rag_context(
+                        query=message,
+                        ollama_base_url=ollama_base,
+                        embed_model=embed_model,
+                        qdrant_host=qdrant_host,
+                        qdrant_port=qdrant_port,
+                        collection=collection,
+                        top_k=top_k,
+                    )
+                except Exception as exc:
+                    logger.warning("RAG 检索失败，继续无知识片段生成: %s", exc)
+
+            system_parts = [
+                "你是心理健康方向的倾听与自助支持助手（非执业医师），回复简洁、共情、避免下诊断或开药。",
+                f"当前会话 id：{session_id}。",
+            ]
+            if rag_block:
+                system_parts.append(rag_block)
+            system_prompt = "\n".join(system_parts)
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{ollama_base.rstrip('/')}/api/chat",
+                    json={
+                        "model": chat_model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": message},
+                        ],
+                        "stream": False,
+                        "options": {"temperature": 0.6},
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+            msg = payload.get("message") or {}
+            reply = (msg.get("content") or "").strip() or MOCK_REPLIES.get(
+                risk_level, "我在这里，愿意听你说更多。"
+            )
+            model_version = f"ollama:{chat_model}"
+        except Exception as exc:
+            logger.warning("Ollama 调用失败，回退模板回复: %s", exc)
+            reply = MOCK_REPLIES.get(risk_level, "我在这里，愿意听你说更多。")
+            model_version = "v1.0-fallback"
+        inference_time_ms = int((time.perf_counter() - start_time) * 1000)
     else:
         reply = MOCK_REPLIES.get(risk_level, "我在这里，愿意听你说更多。")
         model_version = "v1.0"

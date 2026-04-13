@@ -116,6 +116,14 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 
 请求体字段：`user_id`（必填）、`message`（必填）、`session_id`（可选，UUID）、`audio_url`（可选）。
 
+## 本地 LLM、LangChain 与 Qdrant RAG（ARM Mac Studio）
+
+- **是否还要关键字**：当前**风险等级**仍用关键词启发式（轻量、可解释）；**自然语言回复**在配置 `OLLAMA_BASE_URL` 后改由 **Ollama** 生成；未配置时继续用模板句。
+- **Ollama 和 LangChain 选哪个**：不是二选一。**Ollama** 负责在本机拉模型、推理（Apple Silicon / Metal 上体验好）。**LangChain**（或 LangGraph）是编排框架，适合做复杂链路与 Agent；本仓库先用 **`httpx` 调 Ollama HTTP API**，避免默认再绑一层框架；需要时你可在独立模块引入 LangChain 拼管道。
+- **模型放容器里还是宿主机**：在 Mac Studio 上更推荐 **宿主机安装 Ollama**（`https://ollama.com`），利用 Metal。Compose 里的 Linux 容器一般**用不上 Metal**，大模型镜像也重。可选：`docker compose --profile ollama up -d` 启动容器版 Ollama（适合无 GUI 服务器，Mac 上非首选）。
+- **小模型**：例如 `qwen2.5:3b`、`llama3.2:3b`，先执行 `ollama pull qwen2.5:3b` 与 `ollama pull nomic-embed-text`（嵌入，768 维，与 Qdrant 示例一致）。
+- **和 Qdrant 怎么对齐**：写入与查询必须用**同一嵌入模型**。推荐流程：1）`docker compose up -d` 启动 Qdrant；2）宿主机 Ollama 已拉好模型后，设置 `OLLAMA_BASE_URL=http://127.0.0.1:11434`，执行 `uv run python scripts/build_rag_knowledge.py`（脚本会检测该变量，**用 Ollama 嵌入建库**，与线上一致）；3）在 `.env` 中设置 `OLLAMA_BASE_URL`、`OLLAMA_CHAT_MODEL`、`OLLAMA_EMBED_MODEL`、`QDRANT_RAG_COLLECTION=mental_health_knowledge`；4）启动 API。`services/inference.py` 会在有 `QDRANT_RAG_COLLECTION` 时先检索 Qdrant，再把片段放进 system 提示里调用 `/api/chat`。若 Ollama 或 Qdrant 不可用，会打日志并回退模板回复。
+
 ## 环境变量
 
 | 变量 | 说明 |
@@ -123,9 +131,14 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 | `DATABASE_URL` | AsyncPG 连接串，默认指向本机 Compose 中的 Postgres |
 | `REDIS_URL` | 预留，供后续缓存或任务扩展 |
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Celery 使用 |
-| `QDRANT_HOST` / `QDRANT_PORT` | `build_rag_knowledge.py` 连接 Qdrant |
+| `QDRANT_HOST` / `QDRANT_PORT` | Qdrant 地址；`build_rag_knowledge.py` 与 RAG 检索共用 |
 | `USE_MOCK_INFERENCE` | `true`（默认）时使用内置规则基线；`false` 且配置 `INFERENCE_URL` 时请求外部 `/generate` |
 | `INFERENCE_URL` | 外部推理服务根 URL（例如自建 MLX/llama 网关），勿带末尾路径 |
+| `OLLAMA_BASE_URL` | 若设置且未走 `INFERENCE_URL` 远程分支，则用 Ollama `/api/chat` 生成回复（如 `http://127.0.0.1:11434`） |
+| `OLLAMA_CHAT_MODEL` | 对话模型名，默认 `qwen2.5:3b` |
+| `OLLAMA_EMBED_MODEL` | 嵌入模型，默认 `nomic-embed-text`（与 RAG 检索、`build_rag_knowledge` 的 Ollama 路径一致） |
+| `QDRANT_RAG_COLLECTION` | 非空则启用 RAG：用上述嵌入查 Qdrant，再把命中片段写入 system 提示 |
+| `QDRANT_RAG_TOP_K` | 检索条数，默认 `3` |
 
 ## 测试
 
@@ -147,7 +160,7 @@ MINDCORE_E2E_BASE_URL=http://127.0.0.1:8080 uv run pytest tests/test_e2e_api.py 
 
 ```
 api/                 # FastAPI 应用与配置
-services/            # 推理与领域逻辑（默认可切换远程生成服务）
+services/            # 推理、RAG（Ollama + Qdrant）、远程 INFERENCE_URL
 worker/              # Celery 应用与任务
 scripts/             # 初始化 SQL、RAG 构建、主动学习
 tests/               # 单元测试与 E2E
