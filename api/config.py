@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/0"
 
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_chat_model: str = "qwen2.5:3b"
+    ollama_chat_model: str = "llama3.2:1b"
     ollama_embed_model: str = "nomic-embed-text"
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333

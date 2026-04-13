@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CHAT_MODEL="${OLLAMA_CHAT_MODEL:-qwen2.5:3b}"
+CHAT_MODEL="${OLLAMA_CHAT_MODEL:-llama3.2:1b}"
 EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
 BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 

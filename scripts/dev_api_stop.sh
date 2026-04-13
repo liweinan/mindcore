@@ -4,9 +4,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PID_FILE="$ROOT/logs/api.pid"
 
 if [ ! -f "$PID_FILE" ]; then
-  echo "未找到 $PID_FILE，尝试释放 8000 端口…"
+  echo "未找到 ${PID_FILE}，尝试释放 8000 端口"
   if command -v lsof >/dev/null 2>&1; then
-    lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+    pids=$(lsof -ti:8000 2>/dev/null || true)
+    if [ -n "${pids}" ]; then
+      kill -9 ${pids} 2>/dev/null || true
+    fi
   fi
   exit 0
 fi
