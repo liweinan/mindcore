@@ -1,12 +1,7 @@
 """对话推理与 RAG 编排。
 
-数据流（终端用户只调 HTTP `/v1/chat`，不访问 Qdrant）：
-
-1. **风险**：仍用关键词启发式（与向量库无关）。
-2. **回复**：面向用户的自然语言一律来自 **大模型**（或远程 `INFERENCE_URL` / 回退模板）。
-3. **RAG**：若配置了 `QDRANT_RAG_COLLECTION`，由**本服务**用嵌入检索 Qdrant，把命中的**原文片段**写进
-   发给大模型的 **system 提示**，再调 `/api/chat`。大模型不直连向量库，也不向用户暴露原始检索 API——
-   这是常见的 RAG 形态（检索器 + 生成器）。
+默认经 **Ollama** 生成回复（`OLLAMA_BASE_URL` 默认为 `http://127.0.0.1:11434`），不再提供「未配置则仅用关键词模板」的路径。
+仅当 `USE_TEMPLATE_FALLBACK=true` 时，Ollama 失败才回退模板。风险等级仍可用关键词启发式。
 """
 
 from __future__ import annotations
@@ -18,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from api.config import get_settings
+from services.inference_errors import InferenceUnavailableError
 from services.rag import retrieve_rag_context
 
 logger = logging.getLogger(__name__)
@@ -42,11 +39,15 @@ def _baseline_risk_and_confidence(message: str) -> tuple[int, float]:
     return risk_level, confidence
 
 
+def _template_reply(risk_level: int) -> str:
+    return MOCK_REPLIES.get(risk_level, "我在这里，愿意听你说更多。")
+
+
 async def infer(message: str, session_id: str) -> dict[str, Any]:
     start_time = time.perf_counter()
+    cfg = get_settings()
     inference_url = (os.getenv("INFERENCE_URL") or "").strip()
     use_mock = os.getenv("USE_MOCK_INFERENCE", "true").lower() in ("1", "true", "yes")
-    ollama_base = (os.getenv("OLLAMA_BASE_URL") or "").strip()
 
     risk_level, confidence = _baseline_risk_and_confidence(message)
     reply: str
@@ -65,74 +66,87 @@ async def infer(message: str, session_id: str) -> dict[str, Any]:
             )
             response.raise_for_status()
             payload = response.json()
-        reply = (payload.get("text") or "").strip() or MOCK_REPLIES.get(
-            risk_level, "我在这里，愿意听你说更多。"
-        )
+        reply = (payload.get("text") or "").strip() or _template_reply(risk_level)
         model_version = "remote-mlx"
         inference_time_ms = int(payload.get("inference_time_ms") or 0)
         if inference_time_ms <= 0:
             inference_time_ms = int((time.perf_counter() - start_time) * 1000)
-    elif ollama_base:
-        try:
-            chat_model = (os.getenv("OLLAMA_CHAT_MODEL") or "qwen2.5:3b").strip()
-            embed_model = (os.getenv("OLLAMA_EMBED_MODEL") or "nomic-embed-text").strip()
-            collection = (os.getenv("QDRANT_RAG_COLLECTION") or "").strip()
-            qdrant_host = (os.getenv("QDRANT_HOST") or "localhost").strip()
-            qdrant_port = int(os.getenv("QDRANT_PORT") or "6333")
-            top_k = int(os.getenv("QDRANT_RAG_TOP_K") or "3")
+        return {
+            "reply": reply,
+            "risk_level": risk_level,
+            "confidence": confidence,
+            "model_version": model_version,
+            "inference_time_ms": inference_time_ms,
+        }
 
-            rag_block = ""
-            if collection:
-                try:
-                    rag_block = await retrieve_rag_context(
-                        query=message,
-                        ollama_base_url=ollama_base,
-                        embed_model=embed_model,
-                        qdrant_host=qdrant_host,
-                        qdrant_port=qdrant_port,
-                        collection=collection,
-                        top_k=top_k,
-                    )
-                except Exception as exc:
-                    logger.warning("RAG 检索失败，继续无知识片段生成: %s", exc)
+    ollama_base = cfg.ollama_base_url.rstrip("/")
+    chat_model = cfg.ollama_chat_model.strip()
+    embed_model = cfg.ollama_embed_model.strip()
+    collection = (cfg.qdrant_rag_collection or "").strip()
+    top_k = cfg.qdrant_rag_top_k
+    allow_fallback = cfg.use_template_fallback
 
-            system_parts = [
-                "你是心理健康方向的倾听与自助支持助手（非执业医师），回复简洁、共情、避免下诊断或开药。",
-                f"当前会话 id：{session_id}。",
-            ]
-            if rag_block:
-                system_parts.append(rag_block)
-            system_prompt = "\n".join(system_parts)
-
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{ollama_base.rstrip('/')}/api/chat",
-                    json={
-                        "model": chat_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": message},
-                        ],
-                        "stream": False,
-                        "options": {"temperature": 0.6},
-                    },
+    try:
+        rag_block = ""
+        if collection:
+            try:
+                rag_block = await retrieve_rag_context(
+                    query=message,
+                    ollama_base_url=ollama_base,
+                    embed_model=embed_model,
+                    qdrant_host=cfg.qdrant_host,
+                    qdrant_port=cfg.qdrant_port,
+                    collection=collection,
+                    top_k=top_k,
                 )
-                response.raise_for_status()
-                payload = response.json()
-            msg = payload.get("message") or {}
-            reply = (msg.get("content") or "").strip() or MOCK_REPLIES.get(
-                risk_level, "我在这里，愿意听你说更多。"
+            except Exception as exc:
+                logger.warning("RAG 检索失败，继续无知识片段生成: %s", exc)
+
+        system_parts = [
+            "你是心理健康方向的倾听与自助支持助手（非执业医师），回复简洁、共情、避免下诊断或开药。",
+            f"当前会话 id：{session_id}。",
+        ]
+        if rag_block:
+            system_parts.append(rag_block)
+        system_prompt = "\n".join(system_parts)
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{ollama_base}/api/chat",
+                json={
+                    "model": chat_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": 0.6},
+                },
             )
+            response.raise_for_status()
+            payload = response.json()
+        msg = payload.get("message") or {}
+        raw_reply = (msg.get("content") or "").strip()
+        if not raw_reply:
+            if allow_fallback:
+                reply = _template_reply(risk_level)
+                model_version = "v1.0-fallback-empty"
+            else:
+                raise InferenceUnavailableError("Ollama 返回空内容")
+        else:
+            reply = raw_reply
             model_version = f"ollama:{chat_model}"
-        except Exception as exc:
+        inference_time_ms = int((time.perf_counter() - start_time) * 1000)
+    except InferenceUnavailableError:
+        raise
+    except Exception as exc:
+        if allow_fallback:
             logger.warning("Ollama 调用失败，回退模板回复: %s", exc)
-            reply = MOCK_REPLIES.get(risk_level, "我在这里，愿意听你说更多。")
+            reply = _template_reply(risk_level)
             model_version = "v1.0-fallback"
-        inference_time_ms = int((time.perf_counter() - start_time) * 1000)
-    else:
-        reply = MOCK_REPLIES.get(risk_level, "我在这里，愿意听你说更多。")
-        model_version = "v1.0"
-        inference_time_ms = int((time.perf_counter() - start_time) * 1000)
+            inference_time_ms = int((time.perf_counter() - start_time) * 1000)
+        else:
+            raise InferenceUnavailableError(f"Ollama 不可用: {exc}") from exc
 
     return {
         "reply": reply,

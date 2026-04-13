@@ -43,6 +43,16 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    # 避免继承宿主机代理导致 registry 拉取失败（常见于本机 Clash 等）
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
 
 volumes:
   postgres_data:

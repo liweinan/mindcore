@@ -104,7 +104,7 @@ uv run python scripts/active_learning.py
 | GET | `/health` | 进程存活；JSON 中 `status` 为 `ok` |
 | GET | `/ready` | 数据库连通性 |
 | GET | `/metrics` | Prometheus 指标 |
-| POST | `/v1/chat` | 创建或延续会话，返回回复与风险等级等 |
+| POST | `/v1/chat` | 创建或延续会话，返回回复与风险等级等；Ollama 不可用且未开启模板回退时为 503 |
 
 ### `POST /v1/chat` 示例
 
@@ -118,7 +118,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 
 ## 本地 LLM、LangChain 与 Qdrant RAG（ARM Mac Studio）
 
-- **是否还要关键字**：当前**风险等级**仍用关键词启发式（轻量、可解释）；**自然语言回复**在配置 `OLLAMA_BASE_URL` 后改由 **Ollama** 生成；未配置时继续用模板句。
+- **是否还要关键字**：**风险等级**仍用关键词启发式（轻量、可解释）。**自然语言回复默认始终经 Ollama**（`OLLAMA_BASE_URL` 默认为 `http://127.0.0.1:11434`），不再提供「不配 Ollama 就直接关键词模板」的路径；仅当 `USE_TEMPLATE_FALLBACK=true` 且 Ollama 失败时，才回退模板。Ollama 不可用且未开回退时，`POST /v1/chat` 返回 **503**。
 - **Ollama 和 LangChain 选哪个**：不是二选一。**Ollama** 负责在本机拉模型、推理（Apple Silicon / Metal 上体验好）。**LangChain**（或 LangGraph）是编排框架，适合做复杂链路与 Agent；本仓库先用 **`httpx` 调 Ollama HTTP API**，避免默认再绑一层框架；需要时你可在独立模块引入 LangChain 拼管道。
 - **模型放容器里还是宿主机**：在 Mac Studio 上更推荐 **宿主机安装 Ollama**（`https://ollama.com`），利用 Metal。Compose 里的 Linux 容器一般**用不上 Metal**，大模型镜像也重。可选：`docker compose --profile ollama up -d` 启动容器版 Ollama（适合无 GUI 服务器，Mac 上非首选）。
 - **小模型**：例如 `qwen2.5:3b`、`llama3.2:3b`，先执行 `ollama pull qwen2.5:3b` 与 `ollama pull nomic-embed-text`（嵌入，768 维，与 Qdrant 示例一致）。
@@ -127,7 +127,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 ### RAG 与本项目行为说明（概念）
 
 - **「让大模型读向量库」**：实际上大模型**不会**去连 Qdrant。做法是**应用层**用向量库做检索，把命中的**文本片段**写进给模型的**提示词**（这里是 `system`），模型再基于「用户原话 + 这些片段」生成回答。这就是常见 **RAG**：检索和生成分开，模型读的是**文字上下文**，不是向量 API。
-- **「回复走大模型」**：在配置了 `OLLAMA_BASE_URL` 时，返回给用户的 `reply` 就是 Ollama `/api/chat` 的生成结果；Qdrant 只参与拼 `system`，不会把检索结果直接当最终回复给用户。当前 `INFERENCE_URL` 远程生成分支尚未接 Qdrant，仅 **Ollama** 路径带检索。
+- **「回复走大模型」**：默认即走 Ollama `/api/chat`（除非走 `INFERENCE_URL` 远程分支）；返回给用户的 `reply` 来自模型生成；Qdrant 只参与拼 `system`。当前 `INFERENCE_URL` 远程分支尚未接 Qdrant，仅 **Ollama** 路径带检索。
 - **「用户直接用向量库」**：当前对外只有 `POST /v1/chat`，没有把 Qdrant 暴露给终端用户，用户也不能直接查向量库。
 
 ## 环境变量
@@ -140,11 +140,12 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 | `QDRANT_HOST` / `QDRANT_PORT` | Qdrant 地址；`build_rag_knowledge.py` 与 RAG 检索共用 |
 | `USE_MOCK_INFERENCE` | `true`（默认）时使用内置规则基线；`false` 且配置 `INFERENCE_URL` 时请求外部 `/generate` |
 | `INFERENCE_URL` | 外部推理服务根 URL（例如自建 MLX/llama 网关），勿带末尾路径 |
-| `OLLAMA_BASE_URL` | 若设置且未走 `INFERENCE_URL` 远程分支，则用 Ollama `/api/chat` 生成回复（如 `http://127.0.0.1:11434`） |
+| `OLLAMA_BASE_URL` | 未走 `INFERENCE_URL` 远程分支时，**默认** `http://127.0.0.1:11434`，用 Ollama `/api/chat` 生成回复 |
 | `OLLAMA_CHAT_MODEL` | 对话模型名，默认 `qwen2.5:3b` |
 | `OLLAMA_EMBED_MODEL` | 嵌入模型，默认 `nomic-embed-text`（与 RAG 检索、`build_rag_knowledge` 的 Ollama 路径一致） |
 | `QDRANT_RAG_COLLECTION` | 非空则启用 RAG：用上述嵌入查 Qdrant，再把命中片段写入 system 提示 |
 | `QDRANT_RAG_TOP_K` | 检索条数，默认 `3` |
+| `USE_TEMPLATE_FALLBACK` | `true` 时 Ollama 失败或返回空内容则回退关键词模板；默认 `false`（生产建议保持 false） |
 
 ## 测试
 
@@ -153,6 +154,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 uv run pytest tests/test_inference.py -q
 
 # HTTP E2E：需先 docker compose up -d，且 API 已在运行（另一终端 uv run uvicorn，或 ./scripts/dev_api_background.sh）
+# 若本机未起 Ollama，请在 .env 中设 USE_TEMPLATE_FALLBACK=true，或在启动 API 的 shell 里 export 后再起服务
 uv run pytest tests/test_e2e_api.py -v
 ```
 

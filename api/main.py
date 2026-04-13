@@ -14,6 +14,7 @@ from starlette.responses import Response
 
 from api.config import settings
 from services.inference import infer
+from services.inference_errors import InferenceUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,10 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                 if row is None:
                     raise HTTPException(status_code=404, detail="session 不存在")
 
-        result = await infer(request.message, session_id_str)
+        try:
+            result = await infer(request.message, session_id_str)
+        except InferenceUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=exc.message) from exc
         user_msg_id = uuid.uuid4()
         assistant_msg_id = uuid.uuid4()
 
