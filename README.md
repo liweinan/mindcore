@@ -65,7 +65,7 @@ uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 
 **说明**：`uvicorn` / `celery worker` 是**常驻进程**，会一直占用当前终端；若把「起服务 + 跑脚本 + 跑 pytest」写在一条命令里且不放到后台，看起来会像**卡死**。开发时建议：
 
-- **两个终端**：一个专门跑 `uvicorn`（或 Celery），另一个跑 `curl` / `pytest`；
+- **两个终端**：一个专门跑 `uv run uvicorn`（或 `uv run celery`），另一个跑 `curl` / `uv run pytest`；
 - **或后台启动 API**（项目内脚本，日志在 `logs/api.log`，PID 在 `logs/api.pid`）：
 
 ```bash
