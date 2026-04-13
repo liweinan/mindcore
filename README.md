@@ -123,7 +123,12 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 - **模型放容器里还是宿主机**：在 Mac Studio 上更推荐 **宿主机安装 Ollama**（`https://ollama.com`），利用 Metal。Compose 里的 Linux 容器一般**用不上 Metal**，大模型镜像也重。可选：`docker compose --profile ollama up -d` 启动容器版 Ollama（适合无 GUI 服务器，Mac 上非首选）。
 - **小模型**：例如 `qwen2.5:3b`、`llama3.2:3b`，先执行 `ollama pull qwen2.5:3b` 与 `ollama pull nomic-embed-text`（嵌入，768 维，与 Qdrant 示例一致）。
 - **和 Qdrant 怎么对齐**：写入与查询必须用**同一嵌入模型**。推荐流程：1）`docker compose up -d` 启动 Qdrant；2）宿主机 Ollama 已拉好模型后，设置 `OLLAMA_BASE_URL=http://127.0.0.1:11434`，执行 `uv run python scripts/build_rag_knowledge.py`（脚本会检测该变量，**用 Ollama 嵌入建库**，与线上一致）；3）在 `.env` 中设置 `OLLAMA_BASE_URL`、`OLLAMA_CHAT_MODEL`、`OLLAMA_EMBED_MODEL`、`QDRANT_RAG_COLLECTION=mental_health_knowledge`；4）启动 API。
-- **谁读向量库、谁回复用户**：客户端**只**请求 `POST /v1/chat`，**不**直连 Qdrant。服务端用嵌入做 **ANN 检索**，取出的是 chunk 的**文本**，把这些文字放进发给大模型的 **system 上下文**；**最终给用户看的 `reply` 只来自大模型**（或模板回退）。大模型本身不连接 Qdrant，也不会把向量检索 API 暴露给终端——这是标准 RAG（检索 + 生成解耦）。当前 `INFERENCE_URL` 远程生成分支尚未接 Qdrant，仅 **Ollama** 路径带 RAG。
+
+### RAG 与本项目行为说明（概念）
+
+- **「让大模型读向量库」**：实际上大模型**不会**去连 Qdrant。做法是**应用层**用向量库做检索，把命中的**文本片段**写进给模型的**提示词**（这里是 `system`），模型再基于「用户原话 + 这些片段」生成回答。这就是常见 **RAG**：检索和生成分开，模型读的是**文字上下文**，不是向量 API。
+- **「回复走大模型」**：在配置了 `OLLAMA_BASE_URL` 时，返回给用户的 `reply` 就是 Ollama `/api/chat` 的生成结果；Qdrant 只参与拼 `system`，不会把检索结果直接当最终回复给用户。当前 `INFERENCE_URL` 远程生成分支尚未接 Qdrant，仅 **Ollama** 路径带检索。
+- **「用户直接用向量库」**：当前对外只有 `POST /v1/chat`，没有把 Qdrant 暴露给终端用户，用户也不能直接查向量库。
 
 ## 环境变量
 
