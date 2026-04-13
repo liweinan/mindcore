@@ -152,4 +152,4 @@ requirements.txt
 
 ## 许可证
 
-若未单独提供许可证文件，默认以项目所有者后续补充为准。
+本项目以 [MIT License](LICENSE) 发布（Copyright (c) 2026 liweinan）。
