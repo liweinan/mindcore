@@ -1,6 +1,6 @@
 # MindCore 后续改进方向
 
-面向本仓库当前实现（FastAPI、`services/inference.py` 直连 Ollama、PostgreSQL 会话与消息、`worker/` 中 Celery 占位任务、Qdrant RAG）的演进说明。不涉及医疗合规承诺；上线前须单独完成产品与法务评审。
+面向本仓库当前实现（FastAPI、`services/inference.py` 直连 Ollama、PostgreSQL 会话与消息、`worker/` 中 Celery 占位任务、Qdrant RAG）的演进说明；**第 6 节**补充多模态接入思路。不涉及医疗合规承诺；上线前须单独完成产品与法务评审。
 
 ---
 
@@ -129,6 +129,60 @@
 
 ---
 
+## 6. 多模态能力建设
+
+**含义**：在应用层将语音/视频等 **先变为可与现有链路对齐的文本（或结构化摘要）**，再进入 `infer()`、RAG 与风险规则；不必首版就换成端到端多模态大模型。
+
+### 现状（本仓库）
+
+- `POST /v1/chat` 已支持可选 `audio_url`，`messages` 表含 `has_audio`、`audio_url`、`has_video`、`video_url`；但 **`infer()` 仅使用 `message` 文本**，媒体 URL 不参与推理。
+- `worker/tasks.process_multimodal` 为占位，可与第 1 节 Celery 队列（如 `audio`）结合。
+
+### 产品形态
+
+| 形态 | 说明 | 适用 |
+|------|------|------|
+| **同步** | 短语音：拉流/下载 → ASR → 拼文本 → 同请求内调用 `infer()` | 低延迟、实现相对简单 |
+| **异步** | 长音频/视频：`202` + `task_id`，Celery 内 ASR/抽帧，结果写库或回调 | 与第 1 节「从 API 投递任务」一致 |
+
+可组合：**短语音走同步扩展，重任务走异步**。
+
+### 推荐管线
+
+1. **获取媒体**：按 URL 拉取（鉴权、超时、大小上限）。
+2. **语音**：ASR（本地 Whisper / 云 API 等）→ 转写文本 `transcript`。
+3. **视频（可选）**：抽音轨 ASR；若需画面信息再抽帧 + 视觉 caption 或小 VLM，与 transcript 合成 **一段融合文本** 或 JSON。
+4. **与用户输入融合**：例如 `transcript` 与用户 `message` 拼接为单一字符串再传入 `infer()`；纯语音场景可令 `message` 为占位或全文使用转写。
+5. **下游**：融合串仍走现有 **文本嵌入 + Qdrant 检索 + `/api/chat`**；关键词风险可对 **拼接后的全文** 计算（见第 4 节扩展）。
+
+### 与 RAG / 嵌入
+
+- 检索查询句应来自 **融合后的用户意图文本**；继续沿用 **`OLLAMA_EMBED_MODEL`**，与建库脚本一致（见 `docs/rag-embedding-and-qdrant.md`）。
+- 若未来引入「音频向量」等，需单独集合与编码器，与当前文本 RAG **分路** 设计。
+
+### 工程落点
+
+| 环节 | 建议 |
+|------|------|
+| **新模块** | 如 `services/multimodal.py`：`audio_url` → `transcript`，错误可映射为 HTTP 4xx/5xx。 |
+| **API** | 在调用 `infer()` **之前**完成转写与拼接；必要时扩展分片上传、`video_url` 等。 |
+| **Celery** | 实现 `process_multimodal`：按 `message_id` 写回 `transcript` 或更新 `content` 补充字段；幂等与去重见第 1 节。 |
+| **数据层** | 可新增 `messages.transcript` 或 JSONB `media_metadata`；与 `scripts/init_db.sql` 迁移配套。 |
+| **配置** | 在 `Settings` 中增加 ASR 端点、模型名、时长上限、同步/异步策略等。 |
+
+### 评测与安全
+
+- ASR：WER、领域词表（心理相关术语）；端到端用例含带音频请求。
+- 风险与隐私：转写内容分级存储、留存策略、日志脱敏；危机流程仍须人工复核设计（见第 4 节）。
+
+### 实施顺序建议
+
+1. 语音 + ASR → 拼入 `message` 再 `infer()`（同步或短异步）。  
+2. 打通 Celery 写回与任务查询。  
+3. 再考虑视频画面、专用多模态模型（成本与评测复杂度更高）。
+
+---
+
 ## 文档与代码索引
 
 | 主题 | 位置 |
@@ -141,3 +195,4 @@
 | 数据库表（含 `ab_tests`） | `scripts/init_db.sql` |
 | 环境变量说明 | `README.md` |
 | 风险评估目标架构（K8s 地盘与数据流） | `docs/technical-analysis-data-rag.md` §6.5 |
+| RAG 与嵌入模型一致性 | `docs/rag-embedding-and-qdrant.md` |
