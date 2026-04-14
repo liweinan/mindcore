@@ -1,6 +1,6 @@
 # MindCore 技术分析：会话存储、向量与 RAG 流程
 
-本文描述仓库**当前实现**（以 `api/main.py`、`services/inference.py`、`services/rag.py`、`scripts/build_rag_knowledge.py`、`scripts/init_db.sql` 为准）。声明：本系统为原型，输出不构成医疗诊断。
+本文描述仓库**当前实现**（以 `api/main.py`、`services/inference.py`、`services/rag.py`、`scripts/build_rag_knowledge.py`、`scripts/init_db.sql` 为准），并在**第 6 节**给出与 `docs/roadmap-improvements.md` 对齐的 **Kubernetes 未来架构**示意。声明：本系统为原型，输出不构成医疗诊断。
 
 ---
 
@@ -177,6 +177,101 @@ flowchart TD
 
 ---
 
+## 6. 未来架构（Kubernetes 与改进路线）
+
+以下与 **`docs/roadmap-improvements.md`** 中的 Celery、K8s、LangChain、风险评估演进一致，描述**目标态**而非当前仓库已部署的清单。数据面（PostgreSQL、Redis、Qdrant）在生产中常见为 **托管服务** 或集群内 **StatefulSet / Operator**；图为逻辑地盘划分。
+
+### 6.1 逻辑分层与 K8s 地盘
+
+| 地盘 | 典型工作负载 | 说明 |
+|------|----------------|------|
+| **入口** | `Ingress` / Gateway | TLS、路由、限流；对外暴露 `mindcore-api` Service。 |
+| **无状态应用** | `Deployment: mindcore-api` | FastAPI 水平扩缩（HPA）；探针 `/health`、`/ready`。 |
+| **异步计算** | `Deployment: celery-worker`、可选 `celery-beat` | 与在线推理解耦；队列可拆分（如 `audio`、`default`）；消费 Redis broker。 |
+| **数据与消息** | PostgreSQL、Redis、Qdrant | PG 存会话与消息；Redis 作 Celery broker/result 及可选缓存；Qdrant 存向量集合。 |
+| **推理算力** | `Deployment`/`StatefulSet: ollama` 或集群外推理网关 | **GPU 节点池**：`nvidia.com/gpu` limits、taint/toleration，仅推理 Pod 占用；API 通过 `OLLAMA_BASE_URL` / `INFERENCE_URL` 指向集群内 `Service` DNS。 |
+
+配置与密钥经 `ConfigMap` / `Secret` 注入，与改进文档一致。
+
+### 6.2 集群拓扑（Mermaid）
+
+```mermaid
+flowchart TB
+  subgraph ext["集群外"]
+    U[用户 / 调用方]
+  end
+
+  subgraph k8s["Kubernetes 集群"]
+    subgraph ingress_zone["入口层"]
+      ING[Ingress 或 Gateway]
+    end
+
+    subgraph cpu_pool["计算节点池 CPU"]
+      API[mindcore-api Deployment]
+      CW[celery-worker Deployment]
+      BEAT[celery-beat 可选]
+    end
+
+    subgraph data_plane["数据面 托管或集群内"]
+      PG[(PostgreSQL)]
+      RD[(Redis)]
+      QD[(Qdrant)]
+    end
+
+    subgraph gpu_pool["GPU 节点池 可 taint 隔离"]
+      OLL[Ollama 或 推理网关]
+    end
+  end
+
+  U --> ING
+  ING --> API
+  API --> PG
+  API --> RD
+  API --> QD
+  API --> OLL
+  CW --> RD
+  CW --> PG
+  CW -.->|可选 转写等| OLL
+  BEAT --> RD
+```
+
+### 6.3 在线聊天与异步任务（未来数据流）
+
+同步路径与**第 5 节**相同：API → 嵌入与 Qdrant → 聊天模型；差别在于 **Ollama/网关** 与 **Qdrant** 的地址变为集群内 Service（例如 `http://ollama.llm.svc.cluster.local:11434`）。异步路径：API 将重任务投递 Celery，Worker 再访问 PG、Redis、可选 GPU 服务。
+
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant IG as Ingress
+  participant API as mindcore-api
+  participant PG as PostgreSQL
+  participant R as Redis
+  participant Q as Qdrant
+  participant O as Ollama GPU Service
+  participant W as celery-worker
+
+  U->>IG: HTTPS /v1/chat
+  IG->>API: 路由到 Pod
+  API->>PG: 会话/消息
+  API->>O: /api/embeddings + /api/chat
+  API->>Q: 向量检索
+  API-->>U: ChatResponse
+
+  Note over API,W: 异步：多模态/批处理等
+  API->>R: 投递任务
+  W->>R: 取任务
+  W->>PG: 更新状态/写结果
+  W->>O: 可选调用
+```
+
+### 6.4 演进备注
+
+- **LangChain / LangGraph**：可置于 `mindcore-api` 进程内独立模块，不改变上图集群分层，仅替换 `infer()` 内部编排方式。
+- **风险评估增强**：规则库、专用分类服务或额外向量集合仍通过 API 同进程或 Sidecar 访问 PG/Qdrant，算力需求低时可留在 CPU 池。
+- **远程推理**：若仅使用 `INFERENCE_URL`，可将 **GPU 地盘** 迁至集群外专用集群，K8s 内 API 仅保留无 GPU 的 Deployment。
+
+---
+
 ## 代码索引
 
 | 内容 | 文件 |
@@ -187,3 +282,4 @@ flowchart TD
 | 示例建库 | `scripts/build_rag_knowledge.py` |
 | 表定义 | `scripts/init_db.sql` |
 | 默认模型与 Qdrant 配置 | `api/config.py` |
+| 改进路线（Celery、K8s、LangChain、风险） | `docs/roadmap-improvements.md` |
