@@ -98,6 +98,10 @@
 - 落库字段已包含 `messages.risk_level`、`confidence`；扩展时增加 `risk_signals`（JSON，记录规则 id、向量命中、模型版本）便于追溯。
 - 产品若涉及真实危机干预，须定义 **人工复核 SLA** 与 **误判** 处理流程，超出本仓库范围。
 
+### 与架构文档的对应关系
+
+- **Kubernetes 目标态下**各组件所在地盘（规则库、危机向量集合、可选分类服务、融合逻辑）见 **`docs/technical-analysis-data-rag.md` 第 6.5 节**。
+
 ---
 
 ## 5. 大模型生成参数与调参
@@ -136,3 +140,4 @@
 | 可配置项（含 `qdrant_rag_top_k` 等） | `api/config.py` |
 | 数据库表（含 `ab_tests`） | `scripts/init_db.sql` |
 | 环境变量说明 | `README.md` |
+| 风险评估目标架构（K8s 地盘与数据流） | `docs/technical-analysis-data-rag.md` §6.5 |

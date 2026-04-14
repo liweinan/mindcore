@@ -1,6 +1,6 @@
 # MindCore 技术分析：会话存储、向量与 RAG 流程
 
-本文描述仓库**当前实现**（以 `api/main.py`、`services/inference.py`、`services/rag.py`、`scripts/build_rag_knowledge.py`、`scripts/init_db.sql` 为准），并在**第 6 节**给出与 `docs/roadmap-improvements.md` 对齐的 **Kubernetes 未来架构**示意。声明：本系统为原型，输出不构成医疗诊断。
+本文描述仓库**当前实现**（以 `api/main.py`、`services/inference.py`、`services/rag.py`、`scripts/build_rag_knowledge.py`、`scripts/init_db.sql` 为准），并在**第 6 节**给出与 `docs/roadmap-improvements.md` 对齐的 **Kubernetes 未来架构**示意；其中 **§6.5** 对应改进文档 **第 4 节「完善风险评估模块」** 的目标架构。声明：本系统为原型，输出不构成医疗诊断。
 
 ---
 
@@ -267,8 +267,49 @@ sequenceDiagram
 ### 6.4 演进备注
 
 - **LangChain / LangGraph**：可置于 `mindcore-api` 进程内独立模块，不改变上图集群分层，仅替换 `infer()` 内部编排方式。
-- **风险评估增强**：规则库、专用分类服务或额外向量集合仍通过 API 同进程或 Sidecar 访问 PG/Qdrant，算力需求低时可留在 CPU 池。
 - **远程推理**：若仅使用 `INFERENCE_URL`，可将 **GPU 地盘** 迁至集群外专用集群，K8s 内 API 仅保留无 GPU 的 Deployment。
+
+### 6.5 风险评估模块（优化后的目标架构）
+
+与 **`docs/roadmap-improvements.md` 第 4 节**一致：当前实现为 `services/inference.py` 内 **关键词子串计数**；目标态为 **可组合、可审计** 的多路融合，多数逻辑留在 **CPU 池**（API 内或轻量 Sidecar），必要时再调用 **独立分类服务**。
+
+| 组件 | 部署示意 | 作用 |
+|------|----------|------|
+| **规则 / 词表** | PostgreSQL 表或配置中心 + 内存缓存 | 可版本化、按租户加载；替代硬编码 `RISK_KEYWORDS`。 |
+| **语义辅助** | Qdrant **独立 collection**（与 RAG 知识库分离） | 存「危机表述参考」向量；用户句嵌入后检索，相似度与关键词 **融合**；payload 记 `hit_id` 供审计。 |
+| **专用分类器** | 可选 `Deployment: risk-classifier`（CPU/GPU 视模型而定） | HTTP 返回概率；校准后写入 `confidence`。 |
+| **结构化 LLM** | 同 Ollama 服务或独立小模型端点 | JSON schema 约束输出；**与规则/分类器投票或一致性校验**，不单独定案。 |
+| **闭环** | PG 已有 `annotation_tasks` + Celery/定时任务 | 对齐 `ground_truth_risk`，迭代词表与阈值；高危可走异步告警队列（Redis + Worker）。 |
+
+扩展落库可增加 `messages.risk_signals`（JSON）：记录规则 id、向量命中、分类器版本等（详见改进文档）。
+
+```mermaid
+flowchart LR
+  subgraph cpu["CPU 池 mindcore-api 或 Sidecar"]
+    R1[规则引擎 PG/缓存]
+    R2[融合与阈值]
+  end
+
+  subgraph data_risk["数据面"]
+    PG2[(PostgreSQL)]
+    Qcrisis[(Qdrant 危机参考 collection)]
+  end
+
+  subgraph opt["可选"]
+    CLS[risk-classifier Service]
+    LLM_R[结构化 LLM 风险输出]
+  end
+
+  MSG[用户 message] --> R1
+  MSG --> Qcrisis
+  MSG --> CLS
+  MSG --> LLM_R
+  R1 --> PG2
+  Qcrisis --> R2
+  CLS --> R2
+  LLM_R --> R2
+  R2 --> PG2
+```
 
 ---
 
@@ -282,4 +323,4 @@ sequenceDiagram
 | 示例建库 | `scripts/build_rag_knowledge.py` |
 | 表定义 | `scripts/init_db.sql` |
 | 默认模型与 Qdrant 配置 | `api/config.py` |
-| 改进路线（Celery、K8s、LangChain、风险） | `docs/roadmap-improvements.md` |
+| 改进路线（Celery、K8s、LangChain、风险评估 §4） | `docs/roadmap-improvements.md` |
