@@ -13,11 +13,14 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_chat_model: str = "qwen2.5:0.5b-instruct-q2_K"
     ollama_embed_model: str = "nomic-embed-text"
+    # <=0 表示不设置超时（无限等待）
+    ollama_chat_timeout_sec: float = 0.0
+    # <=0 表示不设置超时（无限等待）
+    ollama_embed_timeout_sec: float = 0.0
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
-    qdrant_rag_collection: str = ""
+    qdrant_rag_collection: str = "mental_health_knowledge"
     qdrant_rag_top_k: int = 3
-    use_template_fallback: bool = False
     # 为 true 时打印嵌入向量、Qdrant 命中与 Ollama chat 请求体（含用户消息，仅用于排障）
     inference_debug_log: bool = True
 

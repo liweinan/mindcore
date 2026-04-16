@@ -6,8 +6,7 @@ cd "$ROOT"
 
 ./scripts/dev_api_stop.sh || true
 
-export QDRANT_RAG_COLLECTION="${QDRANT_RAG_COLLECTION:-}"
-export USE_TEMPLATE_FALLBACK="${USE_TEMPLATE_FALLBACK:-false}"
+export QDRANT_RAG_COLLECTION="${QDRANT_RAG_COLLECTION:-mental_health_knowledge}"
 
 ./scripts/dev_api_background.sh
 for _ in $(seq 1 20); do

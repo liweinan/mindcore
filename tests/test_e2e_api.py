@@ -34,8 +34,8 @@ def chat_ok(client: httpx.Client) -> None:
     )
     if probe.status_code != 200:
         pytest.skip(
-            f"POST /v1/chat 返回 {probe.status_code}：请启动 Ollama（默认 http://127.0.0.1:11434）"
-            f"或在 .env 中设 USE_TEMPLATE_FALLBACK=true 后重启 API。响应: {probe.text[:400]}"
+            f"POST /v1/chat 返回 {probe.status_code}：需 Ollama、Qdrant 及已配置集合（如 mental_health_knowledge）"
+            f"与嵌入建库一致。响应: {probe.text[:400]}"
         )
 
 

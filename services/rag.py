@@ -13,7 +13,10 @@ from api.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_EMBED_CLIENT_TIMEOUT_SEC = 120.0
+def _build_http_timeout(timeout_seconds: float) -> httpx.Timeout:
+    if timeout_seconds <= 0:
+        return httpx.Timeout(timeout=None)
+    return httpx.Timeout(timeout=timeout_seconds)
 
 
 async def ollama_embed(client: httpx.AsyncClient, base_url: str, model: str, text: str) -> list[float]:
@@ -39,13 +42,14 @@ async def retrieve_rag_context(
 ) -> str:
     if not collection.strip():
         return ""
+    cfg = get_settings()
     async with httpx.AsyncClient(
-        timeout=OLLAMA_EMBED_CLIENT_TIMEOUT_SEC,
+        timeout=_build_http_timeout(cfg.ollama_embed_timeout_sec),
         trust_env=False,
     ) as http_client:
         vector = await ollama_embed(http_client, ollama_base_url, embed_model, query)
 
-    debug_log = get_settings().inference_debug_log
+    debug_log = cfg.inference_debug_log
     if debug_log:
         logger.info(
             "RAG 嵌入模型=%s 向量维度=%s 向量(JSON)=%s",
