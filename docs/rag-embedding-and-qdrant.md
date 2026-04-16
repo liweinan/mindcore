@@ -25,23 +25,34 @@
 
 ## 2. 离线：用嵌入模型生成向量并写入 Qdrant
 
-脚本 `scripts/build_rag_knowledge.py` 在配置了 **`OLLAMA_BASE_URL`** 时，对每条文档的 `content` 调用 Ollama **`/api/embeddings`**，使用环境变量 **`OLLAMA_EMBED_MODEL`**（默认 `nomic-embed-text`），得到与线上一致的向量空间。
+`scripts/build_rag_knowledge.py` **只**通过 Ollama 生成真实向量并写入 Qdrant，与在线 RAG 使用同一接口 **`POST {OLLAMA_BASE_URL}/api/embeddings`**、同一语义空间。
+
+- **必填**：环境变量 **`OLLAMA_BASE_URL`**（例如 `http://127.0.0.1:11434`）。未设置时脚本向 stderr 打印说明并以非零退出码结束，**不会写入任何点**。
+- **可选**：**`OLLAMA_EMBED_MODEL`**（默认 `nomic-embed-text`）、**`QDRANT_HOST`** / **`QDRANT_PORT`**。
 
 核心步骤：
 
-1. **`ollama_embed_text`**：HTTP `POST {base}/api/embeddings`，body 为 `{"model": embed_model, "prompt": text}`，取返回的 `embedding` 数组。
+1. **`ollama_embed_text`**：对每条文档的 `content` 调用 `POST {OLLAMA_BASE_URL}/api/embeddings`，body 为 `{"model": embed_model, "prompt": text}`，取返回的 `embedding` 数组。
 2. **`recreate_collection`**：按首条向量长度设置 `VectorParams.size`，距离为 **Cosine**。
-3. **`upsert`**：每个点包含 `vector` 与 `payload`（含 `content`、`embedding_model` 等元数据）。
+3. **`upsert`**：每个点包含 `vector` 与 `payload`；`payload.embedding_model` 固定为当前 **`OLLAMA_EMBED_MODEL`** 字符串，便于审计。
 
-```72:102:scripts/build_rag_knowledge.py
-    if use_ollama:
-        vectors = [ollama_embed_text(doc["content"], ollama_base, embed_model) for doc in documents]
-        dim = len(vectors[0])
-        embed_label = embed_model
-    else:
-        vectors = [deterministic_unit_vector(i + 1) for i in range(len(documents))]
-        dim = VECTOR_DIM
-        embed_label = "deterministic-seed"
+```33:41:scripts/build_rag_knowledge.py
+def main() -> None:
+    ollama_base = (os.getenv("OLLAMA_BASE_URL") or "").strip()
+    if not ollama_base:
+        print(
+            "错误：未设置 OLLAMA_BASE_URL。本脚本仅支持通过 Ollama 嵌入接口写入真实向量。\n"
+            "示例：export OLLAMA_BASE_URL=http://127.0.0.1:11434",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+```
+
+随后读取 `OLLAMA_EMBED_MODEL`、连接 Qdrant，并对脚本内 `documents` 列表逐条嵌入；向量生成与写入见：
+
+```71:96:scripts/build_rag_knowledge.py
+    vectors = [ollama_embed_text(doc["content"], ollama_base, embed_model) for doc in documents]
+    dim = len(vectors[0])
 
     client.recreate_collection(
         collection_name=COLLECTION_NAME,
@@ -59,15 +70,16 @@
                     "source": doc["source"],
                     "tags": doc["tags"],
                     "content": doc["content"],
-                    "embedding_model": embed_label,
+                    "embedding_model": embed_model,
                 },
             )
         )
 
     client.upsert(collection_name=COLLECTION_NAME, points=points)
+    print(f"已写入 {len(points)} 条向量到 {COLLECTION_NAME}（Ollama 嵌入 {embed_model}，维度 {dim}）")
 ```
 
-**未设置 `OLLAMA_BASE_URL` 时**：脚本走 **确定性伪向量**（`deterministic_unit_vector`），与真实 Ollama 嵌入 **不在同一语义空间**，仅作占位；此时若线上仍用真实嵌入去搜，**无法**与建库数据正确匹配。
+**历史说明**：旧版脚本在未配置 `OLLAMA_BASE_URL` 时曾写入确定性伪向量，与线上 Ollama 嵌入**不在同一语义空间**。当前版本已移除该路径；若集合仍由旧脚本生成，应重新执行本脚本（会 `recreate_collection`）后再做检索验证。
 
 ---
 
@@ -79,7 +91,7 @@
 2. 使用得到的 **`query_vector`** 调用 `QdrantClient.search`（`limit=top_k`，`with_payload=True`）。
 3. 从命中结果的 `payload["content"]` 拼成文本块，供 `infer()` 写入 **system** 提示，再交给 **聊天模型**（与嵌入无关）。
 
-```19:62:services/rag.py
+```22:67:services/rag.py
 async def ollama_embed(client: httpx.AsyncClient, base_url: str, model: str, text: str) -> list[float]:
     url = f"{base_url.rstrip('/')}/api/embeddings"
     response = await client.post(url, json={"model": model, "prompt": text})
@@ -103,12 +115,22 @@ async def retrieve_rag_context(
 ) -> str:
     if not collection.strip():
         return ""
+    cfg = get_settings()
     async with httpx.AsyncClient(
-        timeout=OLLAMA_EMBED_CLIENT_TIMEOUT_SEC,
+        timeout=_build_http_timeout(cfg.ollama_embed_timeout_sec),
         trust_env=False,
     ) as http_client:
         vector = await ollama_embed(http_client, ollama_base_url, embed_model, query)
-    ...
+
+    debug_log = cfg.inference_debug_log
+    if debug_log:
+        logger.info(
+            "RAG 嵌入模型=%s 向量维度=%s 向量(JSON)=%s",
+            embed_model,
+            len(vector),
+            json.dumps(vector, ensure_ascii=False),
+        )
+
     client = QdrantClient(host=qdrant_host, port=qdrant_port)
     hits = client.search(
         collection_name=collection,
@@ -118,32 +140,36 @@ async def retrieve_rag_context(
     )
 ```
 
-`services/inference.py` 在 Ollama 路径下从配置读取 **`ollama_embed_model`**、**`qdrant_rag_collection`** 等，并传入 `retrieve_rag_context`；**仅当 `qdrant_rag_collection` 非空** 时才执行 RAG。
+`services/inference.py` 的 `infer()` 从配置读取 **`ollama_embed_model`**、**`qdrant_rag_collection`** 等，并调用 `retrieve_rag_context`；**`qdrant_rag_collection` 为空**时会直接报错，不执行 RAG。
 
-```108:127:services/inference.py
+```57:82:services/inference.py
+async def infer(message: str, session_id: str) -> dict[str, Any]:
+    start_time = time.perf_counter()
+    cfg = get_settings()
+    collection = (cfg.qdrant_rag_collection or "").strip()
+    if not collection:
+        raise InferenceUnavailableError(
+            "未配置 QDRANT_RAG_COLLECTION，无法执行 RAG（嵌入 + Qdrant）流程"
+        )
+
+    risk_level, confidence = _baseline_risk_and_confidence(message)
+
     ollama_base = cfg.ollama_base_url.rstrip("/")
     chat_model = cfg.ollama_chat_model.strip()
     embed_model = cfg.ollama_embed_model.strip()
-    collection = (cfg.qdrant_rag_collection or "").strip()
     top_k = cfg.qdrant_rag_top_k
-    allow_fallback = cfg.use_template_fallback
 
     try:
-        rag_block = ""
-        if collection:
-            try:
-                rag_block = await retrieve_rag_context(
-                    query=message,
-                    ollama_base_url=ollama_base,
-                    embed_model=embed_model,
-                    qdrant_host=cfg.qdrant_host,
-                    qdrant_port=cfg.qdrant_port,
-                    collection=collection,
-                    top_k=top_k,
-                )
+        rag_block = await retrieve_rag_context(
+            query=message,
+            ollama_base_url=ollama_base,
+            embed_model=embed_model,
+            qdrant_host=cfg.qdrant_host,
+            qdrant_port=cfg.qdrant_port,
+            collection=collection,
+            top_k=top_k,
+        )
 ```
-
-**远程推理分支**（`INFERENCE_URL` 且 `USE_MOCK_INFERENCE=false`）：当前实现 **不调用** `retrieve_rag_context`，即无嵌入与 Qdrant 参与。
 
 ---
 
@@ -211,7 +237,7 @@ export QDRANT_PORT=6333
 uv run python scripts/build_rag_knowledge.py
 ```
 
-预期日志含：`已写入 3 条向量到 mental_health_knowledge（Ollama 嵌入 (nomic-embed-text)，维度 768）`（条数随脚本内示例文档数量变化）。
+预期终端输出形如：`已写入 3 条向量到 mental_health_knowledge（Ollama 嵌入 nomic-embed-text，维度 768）`（条数随脚本内示例文档数量变化）。
 
 ### 3. 验证检索链（仅 `retrieve_rag_context`）
 
@@ -272,7 +298,50 @@ uv run pytest tests/test_inference.py -q
 ### 排障说明
 
 - `INFERENCE_DEBUG_LOG=true` 时会在日志中输出**整段嵌入向量 JSON**，体积大，仅排障使用；日常验证建议 **`INFERENCE_DEBUG_LOG=false`**。
-- 若 `OLLAMA_BASE_URL` 未设置即运行建库脚本，会得到**伪向量**集合，与线上一致嵌入检索**不兼容**（见上文「未设置 `OLLAMA_BASE_URL`」）。
+- 若未设置 **`OLLAMA_BASE_URL`** 即运行建库脚本，脚本会**直接退出**，不会写入 Qdrant（避免误用非 Ollama 向量建库）。
+
+---
+
+## 7. Call Chain 与日志判读（运行态）
+
+本节给出 **`/v1/chat` 单次请求**的最小调用链，以及每一步对应的日志证据，便于快速判断「是否命中 RAG」「是否注入对话模型」「失败点在哪」。
+
+### 7.1 最小调用链（代码路径）
+
+1. `api/main.py`：`POST /v1/chat` → `infer(request.message, session_id)`
+2. `services/inference.py`：`infer(...)` 读取配置并调用 `retrieve_rag_context(...)`
+3. `services/rag.py`：`retrieve_rag_context(...)` 内部
+   - `POST {OLLAMA_BASE_URL}/api/embeddings`（生成查询向量）
+   - `QdrantClient.search(..., query_vector=..., limit=top_k)`（向量检索）
+   - 命中结果 `payload.content` 拼成 `rag_block`
+4. `services/inference.py`：将 `rag_block` 拼入 `system`，发 `POST {OLLAMA_BASE_URL}/api/chat`
+5. `api/main.py`：拿到回复后写入 PostgreSQL 并返回 `ChatResponse`
+
+### 7.2 日志证据对照表
+
+| 阶段 | 关键日志样式 | 结论 |
+|------|--------------|------|
+| 嵌入成功 | `INFO:services.rag:RAG 嵌入模型=<model> 向量维度=<n>` | 已调用 `/api/embeddings`，查询向量已生成 |
+| Qdrant 检索成功 | `INFO:services.rag:RAG Qdrant collection=<name> top_k=<k> 命中=[...]` | 已执行向量检索；`命中` 列表即 top-k 结果 |
+| RAG 注入 chat 请求 | `INFO:services.inference:Ollama chat 请求 JSON=...` 且 system 中出现 `以下是与用户问题相关的知识片段` | 命中内容已拼到 `system_prompt` |
+| 聊天模型返回成功 | `ollama-1 ... POST "/api/chat" 200` + `api-1 ... "POST /v1/chat HTTP/1.1" 200` | 对话模型调用成功且 API 成功返回 |
+
+### 7.3 常见失败定位
+
+| 现象 | 优先检查项 | 说明 |
+|------|------------|------|
+| `Ollama 不可用: ReadTimeout` / `Ollama 对话不可用: ...` | `OLLAMA_CHAT_TIMEOUT_SEC`、模型冷启动耗时、CPU/GPU 资源 | 聊天模型请求超时或失败；RAG 检索可能已成功 |
+| `RAG 检索失败（嵌入或 Qdrant）: ...` | `OLLAMA_BASE_URL`、`OLLAMA_EMBED_MODEL`、Qdrant 连通性 | 嵌入或检索阶段失败，chat 阶段不会继续 |
+| 日志只有 chat 请求，没有 `RAG Qdrant ... 命中` | `QDRANT_RAG_COLLECTION` 是否为空、`INFERENCE_DEBUG_LOG` 是否关闭 | collection 为空会直接拒绝 RAG 流程（当前实现）；debug 关闭会减少细节日志 |
+| 命中分数低且内容不相关 | 建库模型与查询模型是否一致、集合是否重建 | 常见于“建库模型 != 查询模型”，或集合仍由旧版伪向量脚本写入、未用当前脚本重建 |
+
+### 7.4 一次完整成功链路的最小判定
+
+至少同时看到以下三条，可判定「RAG 命中并注入到聊天模型」：
+
+1. `RAG 嵌入模型=... 向量维度=...`
+2. `RAG Qdrant collection=... 命中=[...]`
+3. `Ollama chat 请求 JSON=...` 且 `system` 中包含知识片段前缀文本
 
 ---
 

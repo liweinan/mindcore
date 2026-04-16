@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """在 Qdrant 中创建 mental_health_knowledge 集合并写入示例文档。
 
-- 若设置 OLLAMA_BASE_URL + OLLAMA_EMBED_MODEL（推荐 nomic-embed-text，768 维），则用 Ollama 生成向量，与在线 RAG 一致。
-- 否则使用确定性伪向量（离线、与 Ollama 检索不兼容，仅作占位）。
+必须通过 Ollama 的 /api/embeddings 生成真实向量（与在线 RAG 一致）：
+- 必填环境变量：OLLAMA_BASE_URL（例如 http://127.0.0.1:11434）
+- 可选：OLLAMA_EMBED_MODEL（默认 nomic-embed-text，768 维）
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import sys
 import uuid
 
 import httpx
-import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 COLLECTION_NAME = "mental_health_knowledge"
-VECTOR_DIM = 768
+logger = logging.getLogger("services.rag")
 
 
 def ollama_embed_text(text: str, base_url: str, model: str) -> list[float]:
@@ -30,21 +33,22 @@ def ollama_embed_text(text: str, base_url: str, model: str) -> list[float]:
     return [float(x) for x in embedding]
 
 
-def deterministic_unit_vector(seed: int, dim: int = VECTOR_DIM) -> list[float]:
-    rng = np.random.default_rng(seed)
-    vector = rng.standard_normal(dim).astype(np.float32)
-    norm = float(np.linalg.norm(vector)) + 1e-9
-    vector /= norm
-    return vector.tolist()
-
-
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    ollama_base = (os.getenv("OLLAMA_BASE_URL") or "").strip()
+    if not ollama_base:
+        print(
+            "错误：未设置 OLLAMA_BASE_URL。本脚本仅支持通过 Ollama 嵌入接口写入真实向量。\n"
+            "示例：export OLLAMA_BASE_URL=http://127.0.0.1:11434",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    embed_model = (os.getenv("OLLAMA_EMBED_MODEL") or "nomic-embed-text").strip()
     host = os.getenv("QDRANT_HOST", "localhost")
     port = int(os.getenv("QDRANT_PORT", "6333"))
     client = QdrantClient(host=host, port=port)
-    ollama_base = (os.getenv("OLLAMA_BASE_URL") or "").strip()
-    embed_model = (os.getenv("OLLAMA_EMBED_MODEL") or "nomic-embed-text").strip()
-    use_ollama = bool(ollama_base)
 
     documents: list[dict] = [
         {
@@ -69,16 +73,19 @@ def main() -> None:
         },
     ]
 
-    if use_ollama:
-        vectors = [ollama_embed_text(doc["content"], ollama_base, embed_model) for doc in documents]
-        dim = len(vectors[0])
-        embed_label = embed_model
-    else:
-        vectors = [deterministic_unit_vector(i + 1) for i in range(len(documents))]
-        dim = VECTOR_DIM
-        embed_label = "deterministic-seed"
+    vectors = [ollama_embed_text(doc["content"], ollama_base, embed_model) for doc in documents]
+    for vector in vectors:
+        logger.info(
+            "RAG 嵌入模型=%s 向量维度=%s 向量(JSON)=%s",
+            embed_model,
+            len(vector),
+            json.dumps(vector, ensure_ascii=False),
+        )
+    dim = len(vectors[0])
 
-    client.recreate_collection(
+    if client.collection_exists(COLLECTION_NAME):
+        client.delete_collection(COLLECTION_NAME)
+    client.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
     )
@@ -94,14 +101,13 @@ def main() -> None:
                     "source": doc["source"],
                     "tags": doc["tags"],
                     "content": doc["content"],
-                    "embedding_model": embed_label,
+                    "embedding_model": embed_model,
                 },
             )
         )
 
     client.upsert(collection_name=COLLECTION_NAME, points=points)
-    mode = f"Ollama 嵌入 ({embed_label})" if use_ollama else "确定性伪向量"
-    print(f"已写入 {len(points)} 条向量到 {COLLECTION_NAME}（{mode}，维度 {dim}）")
+    print(f"已写入 {len(points)} 条向量到 {COLLECTION_NAME}（Ollama 嵌入 {embed_model}，维度 {dim}）")
 
 
 if __name__ == "__main__":
