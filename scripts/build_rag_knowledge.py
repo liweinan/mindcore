@@ -21,6 +21,18 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 COLLECTION_NAME = "mental_health_knowledge"
 logger = logging.getLogger("services.rag")
 
+# 建库日志里向量只打首尾若干分量，避免刷屏
+VECTOR_LOG_PREVIEW_HEAD = 5
+VECTOR_LOG_PREVIEW_TAIL = 3
+
+
+def _format_vector_preview(vector: list[float], head_count: int, tail_count: int) -> str:
+    if len(vector) <= head_count + tail_count:
+        return json.dumps(vector, ensure_ascii=False)
+    head = ", ".join(f"{x:.6g}" for x in vector[:head_count])
+    tail = ", ".join(f"{x:.6g}" for x in vector[-tail_count:])
+    return f"[{head}, ... , {tail}]"
+
 
 def ollama_embed_text(text: str, base_url: str, model: str) -> list[float]:
     url = f"{base_url.rstrip('/')}/api/embeddings"
@@ -74,12 +86,14 @@ def main() -> None:
     ]
 
     vectors = [ollama_embed_text(doc["content"], ollama_base, embed_model) for doc in documents]
-    for vector in vectors:
+    for index, (doc, vector) in enumerate(zip(documents, vectors)):
+        logger.info("RAG 建库[%s] 待写入文本=%s", index, doc["content"])
         logger.info(
-            "RAG 嵌入模型=%s 向量维度=%s 向量(JSON)=%s",
+            "RAG 建库[%s] 嵌入模型=%s 向量维度=%s 向量预览=%s",
+            index,
             embed_model,
             len(vector),
-            json.dumps(vector, ensure_ascii=False),
+            _format_vector_preview(vector, VECTOR_LOG_PREVIEW_HEAD, VECTOR_LOG_PREVIEW_TAIL),
         )
     dim = len(vectors[0])
 
