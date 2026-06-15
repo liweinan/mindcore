@@ -12,7 +12,7 @@ BASE_URL = os.getenv("MINDCORE_E2E_BASE_URL", "http://127.0.0.1:8000")
 
 @pytest.fixture(scope="module")
 def client() -> httpx.Client:
-    with httpx.Client(base_url=BASE_URL, timeout=30.0) as http_client:
+    with httpx.Client(base_url=BASE_URL, timeout=30.0, trust_env=False) as http_client:
         yield http_client
 
 

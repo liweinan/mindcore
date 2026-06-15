@@ -9,6 +9,7 @@
 | 组件 | 用途 |
 |------|------|
 | FastAPI + Uvicorn | HTTP API、`/metrics`（Prometheus 文本） |
+| React + Vite | 学习用 Web 前端（`web/`，构建产物由 API 托管） |
 | PostgreSQL 15 | 会话、消息、标注任务、模型版本、A/B 配置 |
 | Redis 7 | Celery Broker / Result |
 | Qdrant | RAG 必选；向量集合默认 `mental_health_knowledge`（`scripts/build_rag_knowledge.py` 写入） |
@@ -19,6 +20,7 @@
 - Docker / Docker Compose
 - [uv](https://docs.astral.sh/uv/)（管理 Python 版本、虚拟环境与依赖锁）
 - Python 3.11+（由 `uv` 按 `requires-python` 自动选用，当前环境 3.13 亦可）
+- Node.js 18+ 与 npm（构建 `web/` 下 React 前端）
 - 项目根目录作为工作目录执行下文命令
 
 ## 快速开始
@@ -55,13 +57,36 @@ cp .env.example .env
 
 按需修改数据库、Redis、Qdrant 与推理相关变量（见下文「环境变量」）。
 
-### 4. 启动 API
+### 4. 构建 React 前端
+
+API 根路径 `/` 托管前端构建产物（`web/dist`）。首次或修改前端后需执行：
+
+```bash
+cd web
+npm install
+npm run build
+cd ..
+```
+
+开发时可单独起 Vite 热更新（`/v1` 代理到本机 API）：
+
+```bash
+# 终端 A：API
+uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+
+# 终端 B：前端
+cd web && npm run dev
+```
+
+浏览器打开 [http://127.0.0.1:5173](http://127.0.0.1:5173) 开发；生产式联调打开 [http://127.0.0.1:8000/](http://127.0.0.1:8000/)（需已 `npm run build`）。
+
+### 5. 启动 API
 
 ```bash
 uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-浏览器打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 查看 OpenAPI。
+浏览器打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 查看 OpenAPI；学习页为 [http://127.0.0.1:8000/](http://127.0.0.1:8000/)。
 
 **说明**：`uvicorn` / `celery worker` 是**常驻进程**，会一直占用当前终端；若把「起服务 + 跑脚本 + 跑 pytest」写在一条命令里且不放到后台，看起来会像**卡死**。开发时建议：
 
@@ -73,7 +98,7 @@ uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 # 结束：./scripts/dev_api_stop.sh
 ```
 
-### 5.（可选）启动 Celery Worker
+### 6.（可选）启动 Celery Worker
 
 ```bash
 uv run celery -A worker.celery_app worker --loglevel=info
@@ -81,7 +106,7 @@ uv run celery -A worker.celery_app worker --loglevel=info
 
 同样需要**单独终端**或自行 `nohup ... &` 放到后台，否则会一直阻塞在该命令。
 
-### 6. 写入 Qdrant 知识（API 联调前建议完成）
+### 7. 写入 Qdrant 知识（API 联调前建议完成）
 
 推理会**始终**对 `QDRANT_RAG_COLLECTION` 做嵌入检索；集合需已存在且与 **`OLLAMA_EMBED_MODEL` 建库时一致**。需容器 `qdrant` 与 Ollama 已运行：
 
@@ -89,13 +114,76 @@ uv run celery -A worker.celery_app worker --loglevel=info
 uv run python scripts/build_rag_knowledge.py
 ```
 
-### 7.（可选）主动学习脚本
+### 8.（可选）主动学习脚本
 
 根据消息置信度与风险筛选样本并写入 `annotation_tasks`：
 
 ```bash
 uv run python scripts/active_learning.py
 ```
+
+## 全链路概览
+
+从浏览器或 `curl` 发消息，到拿到 LLM 回复，链路如下：
+
+```
+React 页 / curl
+    → POST /v1/chat（FastAPI）
+    → PostgreSQL 会话/消息落库
+    → 关键词风险基线
+    → Ollama 嵌入 + Qdrant RAG 检索
+    → Ollama 对话生成 reply
+    → JSON 返回（含 risk_level、confidence）
+```
+
+**学习页入口**：[http://127.0.0.1:8000/](http://127.0.0.1:8000/)（需已 `npm run build` 且 API 在跑）
+
+### 一键验证全链路
+
+依赖（Postgres、Qdrant、Ollama、RAG 集合、API、前端构建）就绪后：
+
+```bash
+./scripts/run_full_e2e.sh
+```
+
+脚本依次执行：API 健康检查 → 真实 `/v1/chat` smoke → HTTP E2E（5 项）→ Playwright（7 项，含 UI 截图）。
+
+首次跑 Playwright 需安装浏览器：
+
+```bash
+uv run playwright install chromium
+```
+
+### 网络代理（拉 Ollama 模型）
+
+若需代理访问外网（例如 Clash `7890` 端口），在**拉模型**的终端设置：
+
+```bash
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+./scripts/ensure_ollama_models.sh
+```
+
+注意：`http_proxy` 主机名请写 **`localhost` 或 `127.0.0.1`**，拼写错误（如 `locahost`）会导致 Ollama 拉取失败。本机 API / Qdrant 请求不受此影响；pytest 已对 localhost 关闭代理（`trust_env=False`）。
+
+### 不用 Docker 的本地最小栈（可选）
+
+若 `docker compose` 拉镜像困难，可仅用本机 Postgres + 项目内二进制：
+
+```bash
+# Qdrant（首次需下载二进制到 .local/bin/qdrant，见 release）
+QDRANT__STORAGE__STORAGE_PATH=$PWD/.local/qdrant_storage .local/bin/qdrant &
+
+# Ollama（Homebrew 或 .local/ollama；拉模型时挂代理）
+brew services start ollama   # 或 ollama serve
+
+# 建 RAG、起 API、构建前端（见上文各步）
+OLLAMA_BASE_URL=http://127.0.0.1:11434 uv run python scripts/build_rag_knowledge.py
+cd web && npm run build && cd ..
+uv run uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+`.env` 中 `OLLAMA_BASE_URL`、`DATABASE_URL` 须与实际端口一致。
 
 ## HTTP 接口摘要
 
@@ -161,33 +249,63 @@ curl -s -X POST http://127.0.0.1:8000/v1/chat \
 
 ## 测试
 
-一键验证 **经 RAG + Ollama 的真回复**（需 `docker compose up -d` 起库、Qdrant、Ollama；已执行 `build_rag_knowledge.py` 或集合已存在；已拉好默认模型，例如 `./scripts/ensure_ollama_models.sh`）：
+### 一键全链路（推荐）
+
+```bash
+./scripts/run_full_e2e.sh
+```
+
+### 分步执行
+
+真实对话 smoke（需 Ollama + Qdrant + RAG + API）：
 
 ```bash
 ./scripts/smoke_chat.sh
 ```
 
 ```bash
-# 单元测试（不依赖容器；需已 uv sync --extra dev）
+# 单元测试（不依赖容器）
 uv run pytest tests/test_inference.py -q
 
-# HTTP E2E：需先 docker compose up -d（含 Qdrant、Ollama），已建 RAG 集合，且 API 已在运行
+# HTTP E2E（需 API 已运行）
 uv run pytest tests/test_e2e_api.py -v
+
+# 前端 Playwright + UI 截图（首次会自动 npm install && npm run build）
+uv run playwright install chromium
+uv run pytest tests/test_frontend_playwright.py -v --browser chromium
 ```
+
+### Playwright 截图
+
+测试会把页面截图写入 `docs/screenshots/`：
+
+| 文件 | 说明 |
+|------|------|
+| `learn-initial.png` | 初始页 |
+| `learn-with-reply.png` | Mock API 回复后 |
+| `learn-live-reply.png` | **真实** Ollama 对话回复后 |
+
+![学习页初始状态](docs/screenshots/learn-initial.png)
+
+![Mock 回复](docs/screenshots/learn-with-reply.png)
+
+![真实对话回复](docs/screenshots/learn-live-reply.png)
 
 自定义 API 地址：
 
 ```bash
-MINDCORE_E2E_BASE_URL=http://127.0.0.1:8080 uv run pytest tests/test_e2e_api.py -v
+MINDCORE_E2E_BASE_URL=http://127.0.0.1:8080 ./scripts/run_full_e2e.sh
 ```
 
 ## 仓库结构（节选）
 
 ```
 api/                 # FastAPI 应用与配置
+web/                 # React + Vite 学习页（npm run build → dist/）
+docs/screenshots/    # Playwright 生成的 UI 截图
 services/            # 推理流水线（Ollama 嵌入 + Qdrant + Ollama 对话）
 worker/              # Celery 应用与任务
-scripts/             # 初始化 SQL、RAG 构建、主动学习
+scripts/             # 初始化 SQL、RAG 构建、全链路 E2E（run_full_e2e.sh）
 tests/               # 单元测试与 E2E
 pyproject.toml       # 项目与依赖声明（uv）
 uv.lock              # 依赖锁定（提交到仓库）

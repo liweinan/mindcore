@@ -4,13 +4,15 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import asyncpg
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field
-from starlette.responses import Response
+from starlette.responses import FileResponse, Response
 
 from api.config import settings
 from services.inference import infer
@@ -188,3 +190,22 @@ async def ready():
         logger.exception("readiness check failed")
         raise HTTPException(status_code=503, detail="数据库不可用") from exc
     return {"status": "ready"}
+
+
+WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
+
+
+@app.get("/")
+async def learn_page():
+    index_file = WEB_DIST / "index.html"
+    if not index_file.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="前端未构建，请在 web/ 目录执行 npm install && npm run build",
+        )
+    return FileResponse(index_file)
+
+
+assets_dir = WEB_DIST / "assets"
+if assets_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
